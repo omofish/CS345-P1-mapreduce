@@ -3,6 +3,8 @@ For your first project you will create a MapReduce library as a gentle way to ge
 
 We organized this project in two parts, each in turns divided in two steps; for the first part, you are asked to write a simple MapReduce program and a sample program that use it. In the second part, you will write a distributed version of your MapReduce with a Master that assigns tasks to workers and handles failures. The interface to the library is similar to that described in the original MapReduce paper (Links to an external site.) we discussed in class.
 
+https://www.usenix.org/legacy/event/osdi04/tech/full_papers/dean/dean.pdf
+
 # Project Setup
 The lab is to be implemented in Go (Links to an external site.). For reference on the Go language, the course web site has a pointer to a good tutorial. There are other good references that you may want to check out, including:
 
