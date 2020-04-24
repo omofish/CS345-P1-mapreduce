@@ -1,7 +1,11 @@
 package mapreduce
 
 import (
+	"encoding/json"
 	"hash/fnv"
+	"io/ioutil"
+	"log"
+	"os"
 )
 
 func doMap(
@@ -53,6 +57,40 @@ func doMap(
 	//
 	// Your code here (Part I).
 	//
+
+	// read input file inFile
+	content, err := ioutil.ReadFile(inFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// call map function mapF on contents to generate slice of all KeyValues
+	keyValues := mapF(inFile, string(content))
+
+	// create a map of hashes to []KeyValues such that KVs with the same hash are appended to the same list
+	var rMap = make(map[int][]KeyValue)
+	for _, v := range keyValues {
+		r := ihash(v.Key) % nReduce
+		rMap[r] = append(rMap[r], v)
+	}
+
+	// for each unique r value, create an intermediate file & encode relevant []KeyValue to it in JSON
+	for r, kv := range rMap {
+		filename := reduceName(jobName, mapTask, r) + ".json"
+
+		// create file & defer closing
+		f, err := os.Create(filename)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer f.Close()
+
+		// write json to file in a list of KeyValue objects with same hash
+		// format: [{"Key":"0","Value":""},..., {"Key":"N","Value":""}]
+		enc := json.NewEncoder(f)
+		enc.Encode(kv)
+	}
+
 }
 
 func ihash(s string) int {
