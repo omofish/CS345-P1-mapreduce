@@ -2,11 +2,10 @@ package mapreduce
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
-	"strings"
 )
 
 func doReduce(
@@ -56,21 +55,28 @@ func doReduce(
 	pairs := make(map[string][]string)
 
 	for m := 0; m < nMap; m++ {
-		intFileName := reduceName(jobName, m, reduceTask) + ".json"
-		contents, err := ioutil.ReadFile(intFileName)
-		if nil != err {
+		intFileName := reduceName(jobName, m, reduceTask)
+		inFile, err := os.Open(intFileName)
+		if err != nil {
 			log.Fatal(err)
 		}
-		var kv KeyValue
-		dec := json.NewDecoder(strings.NewReader(string(contents)))
+
+		// create decoder based on Reader inFile
+		dec := json.NewDecoder(inFile)
 		for {
+			var kv map[string]string
+
+			// read new objects into v map until no more left
 			if err := dec.Decode(&kv); err == io.EOF {
+				fmt.Print("\nNo more lines\n")
 				break
 			} else if err != nil {
 				log.Fatal(err)
 			}
-			key := kv.Key
-			value := kv.Value
+
+			key := kv["Key"]
+			value := kv["Value"]
+
 			pairs[key] = append(pairs[key], value)
 		}
 	}
@@ -79,9 +85,10 @@ func doReduce(
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer file.Close()
+
 	enc := json.NewEncoder(file)
 	for key, values := range pairs {
 		enc.Encode(KeyValue{key, reduceF(key, values)})
 	}
-	file.Close()
 }

@@ -75,8 +75,8 @@ func doMap(
 	}
 
 	// for each unique r value, create an intermediate file & encode relevant []KeyValue to it in JSON
-	for r, kv := range rMap {
-		filename := reduceName(jobName, mapTask, r) + ".json"
+	for r, kvArr := range rMap {
+		filename := reduceName(jobName, mapTask, r)
 
 		// create file & defer closing
 		f, err := os.Create(filename)
@@ -86,9 +86,12 @@ func doMap(
 		defer f.Close()
 
 		// write json to file in a list of KeyValue objects with same hash
-		// format: [{"Key":"0","Value":""},..., {"Key":"N","Value":""}]
+		// format: {"0":"", "1":"", etc}
 		enc := json.NewEncoder(f)
-		enc.Encode(kv)
+
+		for _, kv := range kvArr {
+			enc.Encode(kv)
+		}
 	}
 
 }
