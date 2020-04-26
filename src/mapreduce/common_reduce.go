@@ -2,7 +2,7 @@ package mapreduce
 
 import (
 	"encoding/json"
-	"fmt"
+	//"fmt"
 	"io"
 	"log"
 	"os"
@@ -68,7 +68,7 @@ func doReduce(
 
 			// read new objects into v map until no more left
 			if err := dec.Decode(&kv); err == io.EOF {
-				fmt.Print("\nNo more lines\n")
+				//fmt.Print("\nNo more lines\n")
 				break
 			} else if err != nil {
 				log.Fatal(err)
@@ -77,7 +77,13 @@ func doReduce(
 			key := kv["Key"]
 			value := kv["Value"]
 
+			//fmt.Println("Inside of common_reduce")
+			//fmt.Println(kv)
+			//fmt.Println(key)
+			//fmt.Println(value)
+
 			pairs[key] = append(pairs[key], value)
+			//pairs[key] = value[0]
 		}
 	}
 
@@ -87,8 +93,12 @@ func doReduce(
 	}
 	defer file.Close()
 
+	//fmt.Println(outFile)
+
 	enc := json.NewEncoder(file)
 	for key, values := range pairs {
+		//fmt.Println(values)
 		enc.Encode(KeyValue{key, reduceF(key, values)})
 	}
+	//fmt.Println("leaving common_reduce")
 }
