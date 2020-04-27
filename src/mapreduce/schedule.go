@@ -56,10 +56,9 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 
 		// go for concurrency
 		go func() {
-		loop:
 			for {
 				// IMPT: reply is currently assigned to a string primitive
-				reply := ""
+				var reply ShutdownReply
 				ok := call(rpc, "Worker.DoTask", args, &reply)
 				if ok == false {
 					// if worker doesn't reply, goes back to loop
@@ -74,7 +73,7 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 					registerChan <- rpc
 
 					//loop breaks if valid reply received
-					break loop
+					break
 				}
 			}
 		}()
