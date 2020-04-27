@@ -70,6 +70,8 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 
 					//loop breaks if valid reply received
 					break
+				} else {
+					rpc = <-registerChan
 				}
 			}
 		}()
