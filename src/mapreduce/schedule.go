@@ -54,17 +54,13 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 		// received no reply from the server. reply's contents are valid if
 		// and only if call() returned true.
 
-		// go for concurrency
+		// 'go' statemtn for concurrency
 		go func() {
 			for {
 				// IMPT: reply is currently assigned to a string primitive
 				var reply ShutdownReply
 				ok := call(rpc, "Worker.DoTask", args, &reply)
-				if ok == false {
-					// if worker doesn't reply, goes back to loop
-					fmt.Printf("Worker %s did not reply. Resending\n", rpc)
-
-				} else {
+				if ok {
 					// decrease wg counter if reply received
 					wg.Done()
 
