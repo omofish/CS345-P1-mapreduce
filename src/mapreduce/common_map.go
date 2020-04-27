@@ -90,7 +90,7 @@ func doMap(
 		enc := json.NewEncoder(f)
 
 		for _, kv := range kvArr {
-			enc.Encode(kv)
+			enc.Encode(&kv)
 		}
 	}
 
