@@ -22,12 +22,18 @@ type PBServer struct {
 	me         string
 	vs         *viewservice.Clerk
 	// Your declarations here.
+	viewnumber uint
+	isprimary  bool
+	isbackup   bool
 }
 
 
 func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 
 	// Your code here.
+
+	
+
 
 	return nil
 }
@@ -51,6 +57,30 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 func (pb *PBServer) tick() {
 
 	// Your code here.
+	
+
+	currentview, error := pb.vs.Ping(pb.viewnumber)
+	if error != nil {
+		fmt.Println("Bad ping happened")
+	} else {
+
+
+
+	pb.viewnumber = currentview.Viewnum
+
+	if currentview.Primary == pb.me {
+		pb.isprimary = true
+		pb.isbackup = false
+	} else if currentview.Backup == pb.me {
+		pb.isprimary = false
+		pb.isbackup = true
+	} else {
+		pb.isprimary = false
+		pb.isbackup = false
+	}
+
+}
+
 }
 
 // tell the server to shut itself down.
