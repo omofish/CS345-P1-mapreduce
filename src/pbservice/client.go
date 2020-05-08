@@ -11,6 +11,11 @@ import "math/big"
 type Clerk struct {
 	vs *viewservice.Clerk
 	// Your declarations here
+	//pb *PBServer
+	me string
+	server string
+	currentview viewservice.View
+	viewnum uint
 }
 
 // this may come in handy.
@@ -25,6 +30,8 @@ func MakeClerk(vshost string, me string) *Clerk {
 	ck := new(Clerk)
 	ck.vs = viewservice.MakeClerk(me, vshost)
 	// Your ck.* initializations here
+	//pb := new(PBServer)
+	//ck.pb = pb
 
 	return ck
 }
@@ -77,7 +84,31 @@ func (ck *Clerk) Get(key string) string {
 
 	
 
-	return "???"
+	args := &GetArgs{}
+	args.Key = key
+	args.FromPrimary = false
+	var reply GetReply
+
+
+	for {
+		ok := call(ck.currentview.Primary, "PBServer.Get", args, &reply)
+		if ok == false {
+			currentview, error := ck.vs.Ping(ck.viewnum)
+			if error == nil {
+				ck.currentview = currentview
+				ck.viewnum = currentview.Viewnum
+			} 
+
+			
+		} else {
+			break
+		}
+	}
+
+	return reply.Value
+
+	
+
 }
 
 //
@@ -86,6 +117,34 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 	// Your code here.
+		
+		
+
+		args := &PutAppendArgs{}
+		args.Key = key
+		if op == "Put"{
+			args.Value = value
+		} else {
+			existing_val := ck.Get(key)
+			args.Value = existing_val + value
+		}
+		args.FromPrimary = false
+		
+		var reply PutAppendReply
+	
+		for {
+			ok := call(ck.currentview.Primary, "PBServer.PutAppend", args, &reply)
+			if ok == false {
+				currentview, error := ck.vs.Ping(ck.viewnum)
+				if error == nil {
+					ck.currentview = currentview
+					ck.viewnum = currentview.Viewnum
+				} 
+			} else {
+				break
+			}
+		}
+	
 }
 
 //

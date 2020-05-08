@@ -25,6 +25,9 @@ type PBServer struct {
 	viewnumber uint
 	isprimary  bool
 	isbackup   bool
+	log		   map[string]string
+	currentview viewservice.View
+
 }
 
 
@@ -32,10 +35,24 @@ func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 
 	// Your code here.
 
+	//fmt.Println("in get!");
+
+	//fmt.Println(pb.log)
+	//fmt.Println(args.Key)
+
+	if pb.isprimary {
+		reply.Err = "ok"
+		reply.Value = pb.log[args.Key]
+		return nil
+	} else {
+		var Err error
+		
+		return Err
+	}
 	
 
 
-	return nil
+	
 }
 
 
@@ -43,8 +60,46 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 
 	// Your code here.
 
+	//fmt.Println("in PutAppend!");
 
-	return nil
+	//fmt.Println(pb.log)
+
+	if pb.isprimary || args.FromPrimary {
+		pb.log[args.Key] = args.Value
+		reply.Err = "ok"
+		if !pb.isbackup {
+			go func(){
+				for {
+					args.FromPrimary = true
+					ok := call(pb.currentview.Backup, "PBServer.PutAppend", args, &reply)
+					if ok == false {
+						//fmt.Println("looping")					
+						currentview, error := pb.vs.Ping(pb.viewnumber)
+						if error == nil {
+							pb.currentview = currentview
+							pb.viewnumber = currentview.Viewnum
+						} 
+					} else {
+						break
+					}
+				}
+			}()
+			
+		}
+		return nil
+	} else {
+		var Err error 
+		return Err
+	}
+
+	
+
+	//fmt.Println(pb.log)
+
+	
+
+
+	
 }
 
 
@@ -65,7 +120,7 @@ func (pb *PBServer) tick() {
 	} else {
 
 
-
+	pb.currentview = currentview
 	pb.viewnumber = currentview.Viewnum
 
 	if currentview.Primary == pb.me {
@@ -110,10 +165,13 @@ func (pb *PBServer) isunreliable() bool {
 
 
 func StartServer(vshost string, me string) *PBServer {
+	fmt.Println("starting the pbserver!")
 	pb := new(PBServer)
 	pb.me = me
 	pb.vs = viewservice.MakeClerk(me, vshost)
 	// Your pb.* initializations here.
+
+	pb.log = make(map[string]string)
 
 	rpcs := rpc.NewServer()
 	rpcs.Register(pb)
