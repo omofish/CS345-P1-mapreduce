@@ -1,5 +1,6 @@
 package pbservice
 
+
 const (
 	OK             = "OK"
 	ErrNoKey       = "ErrNoKey"
@@ -15,6 +16,8 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	FromPrimary bool
 	SendNum int64
+	SendTime int
+	IsAppend bool
 
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
@@ -29,6 +32,7 @@ type GetArgs struct {
 	// You'll have to add definitions here.
 	FromPrimary bool
 	SendNum int64
+	SendTime int
 }
 
 type GetReply struct {

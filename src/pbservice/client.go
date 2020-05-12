@@ -8,6 +8,7 @@ import "crypto/rand"
 import "math/big"
 
 
+
 type Clerk struct {
 	vs *viewservice.Clerk
 	// Your declarations here
@@ -89,22 +90,23 @@ func (ck *Clerk) Get(key string) string {
 	args.Key = key
 	args.SendNum = nrand()
 	args.FromPrimary = false
+	
 	var reply GetReply
 
 
 	for {
 		ok := call(ck.currentview.Primary, "PBServer.Get", args, &reply)
-		fmt.Println("hello")
-		fmt.Println(reply.Value)
-		fmt.Println(ok)
+		//fmt.Println("hello")
+		//fmt.Println(reply.Value)
+		//fmt.Println(ok)
 		if ok == false {
-			fmt.Println("ok = false")
+			//fmt.Println("ok = false")
 			currentview, err := ck.vs.Ping(ck.viewnum)
-			fmt.Println("after ping")
+			//fmt.Println("after ping")
 			if err == nil {
-				fmt.Println("changing the view in clerk")
-				fmt.Println(ck.me)
-				fmt.Println(currentview)
+				//fmt.Println("changing the view in clerk")
+				//fmt.Println(ck.me)
+				//fmt.Println(currentview)
 				ck.currentview = currentview
 				ck.viewnum = currentview.Viewnum
 			} 
@@ -132,12 +134,13 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 		args := &PutAppendArgs{}
 		args.Key = key
+		
 		if op == "Put"{
-			args.Value = value
+			args.IsAppend = false
 		} else {
-			existing_val := ck.Get(key)
-			args.Value = existing_val + value
+			args.IsAppend = true
 		}
+		args.Value = value
 		args.FromPrimary = false
 		args.SendNum = nrand()
 		
