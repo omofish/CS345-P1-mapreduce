@@ -58,6 +58,7 @@ func call(srv string, rpcname string,
 	args interface{}, reply interface{}) bool {
 	c, errx := rpc.Dial("unix", srv)
 	if errx != nil {
+		//fmt.Println(errx)
 		return false
 	}
 	defer c.Close()
@@ -66,7 +67,7 @@ func call(srv string, rpcname string,
 	if err == nil {
 		return true
 	}
-
+	fmt.Println("This is the Error:")
 	fmt.Println(err)
 	return false
 }
@@ -86,15 +87,24 @@ func (ck *Clerk) Get(key string) string {
 
 	args := &GetArgs{}
 	args.Key = key
+	args.SendNum = nrand()
 	args.FromPrimary = false
 	var reply GetReply
 
 
 	for {
 		ok := call(ck.currentview.Primary, "PBServer.Get", args, &reply)
+		fmt.Println("hello")
+		fmt.Println(reply.Value)
+		fmt.Println(ok)
 		if ok == false {
-			currentview, error := ck.vs.Ping(ck.viewnum)
-			if error == nil {
+			fmt.Println("ok = false")
+			currentview, err := ck.vs.Ping(ck.viewnum)
+			fmt.Println("after ping")
+			if err == nil {
+				fmt.Println("changing the view in clerk")
+				fmt.Println(ck.me)
+				fmt.Println(currentview)
 				ck.currentview = currentview
 				ck.viewnum = currentview.Viewnum
 			} 
@@ -129,11 +139,13 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			args.Value = existing_val + value
 		}
 		args.FromPrimary = false
+		args.SendNum = nrand()
 		
 		var reply PutAppendReply
 	
 		for {
 			ok := call(ck.currentview.Primary, "PBServer.PutAppend", args, &reply)
+			
 			if ok == false {
 				currentview, error := ck.vs.Ping(ck.viewnum)
 				if error == nil {

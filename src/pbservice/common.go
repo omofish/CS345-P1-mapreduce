@@ -14,6 +14,7 @@ type PutAppendArgs struct {
 	Value string
 	// You'll have to add definitions here.
 	FromPrimary bool
+	SendNum int64
 
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
@@ -27,6 +28,7 @@ type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
 	FromPrimary bool
+	SendNum int64
 }
 
 type GetReply struct {
