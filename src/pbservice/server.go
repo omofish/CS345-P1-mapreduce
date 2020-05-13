@@ -16,7 +16,7 @@ import "math/rand"
 
 
 type PBServer struct {
-	mu         sync.Mutex
+	mu         sync.RWMutex
 	l          net.Listener
 	dead       int32 // for testing
 	unreliable int32 // for testing
@@ -27,10 +27,11 @@ type PBServer struct {
 	isprimary  bool
 	isbackup   bool
 	log		   map[string]string
-	seenMap    map[int64]bool
+	seenMap    map[string]int64
 	timeLog    map[string]time.Time
 	backupOrder int
 	recOrder	int
+	hasBackup  bool
 
 	currentview viewservice.View
 
@@ -47,15 +48,19 @@ func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 	//fmt.Println(pb.log)
 	//fmt.Println(args.Key)
 
+	//fmt.Println(pb.currentview.Primary)
+	//fmt.Println(pb.me)
 	
-	
-
+	if pb.isdead() {
+		//reply.Err = fmt.Errorf("dead")
+		return nil
+	}
 
 	if pb.isprimary {
-		pb.mu.Lock()
+		pb.mu.RLock()
 		reply.Err = "ok"
 		reply.Value = pb.log[args.Key]
-		pb.mu.Unlock()
+		pb.mu.RUnlock()
 		return nil
 	} else {
 		//var Err error
@@ -72,149 +77,82 @@ func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 
 	// Your code here.
-
-	//fmt.Println("in PutAppend!");
-
-	//fmt.Println(pb.log)
-	//fmt.Println("in putappend")
-	
-	//fmt.Println(pb.currentview.Backup == pb.me)
-	//fmt.Println(pb.seenMap[args.SendNum])
-
-	if !pb.isbackup && !pb.isprimary {
-		//var Err error
-		fmt.Println("I hope this is the problem")
-		return fmt.Errorf("Backup not online")
+	if pb.isdead() {
+		reply.Err = "dead"
+		return nil
 	}
-
-	pb.mu.Lock()
 	
-	if pb.seenMap[args.SendNum] == true {
-		fmt.Println("rejecting a putappend")
+	//fmt.Print(pb.me + " ")
+	//fmt.Println(args)
+
+	
+	pb.mu.Lock()
+	if(pb.seenMap[args.Key] == args.SendNum && !args.NewBackup){
 		pb.mu.Unlock()
 		return nil
 	}
 	
 	pb.mu.Unlock()
-
 	
 
 	if pb.isprimary {
-		
-		args.FromPrimary = true
-		//fmt.Println("primary is sending this sendnum")
-		//fmt.Println(args.SendNum)
-		
-		//pb.mu.Lock()
-		if pb.currentview.Backup != "" {
-			go func(){
-			for {
-				pb.mu.Lock()
-				args.SendTime = pb.backupOrder
-				pb.backupOrder++
-				pb.mu.Unlock()
-				ok := call(pb.currentview.Backup, "PBServer.PutAppend", args, &reply)
-				
-				
-				if ok == false {
-					//fmt.Println("bad send to backup")
-					//fmt.Println(pb.currentview.Backup)
-					//fmt.Println(pb.currentview.Primary)
-					//fmt.Println(pb.me)
-					//time.Sleep(viewservice.PingInterval * 20)
-				} else {
-					//fmt.Println("This was okayed")
-					//fmt.Println(args.Key)
-					//fmt.Println(args.Value)
-					break
-				}
-			}
-			}()
-		}
-		//pb.mu.Unlock()
-		
 		pb.mu.Lock()
 		if(args.IsAppend){
 			args.Value = pb.log[args.Key] + args.Value
 		}
 		pb.log[args.Key] = args.Value
-		pb.seenMap[args.SendNum] = true
-		pb.mu.Unlock()
-		return nil
-	} else if args.FromPrimary && pb.isbackup{
-		go func() {
-			for {
-				pb.mu.Lock()
-				if (pb.recOrder + 1) == args.SendTime {
-					
-					if(args.IsAppend){
-						args.Value = pb.log[args.Key] + args.Value
-					}
-					pb.log[args.Key] = args.Value
-					pb.seenMap[args.SendNum] = true
-					pb.recOrder++
-					pb.mu.Unlock()
-					break
-				} else {
-					//fmt.Println("sgufdign")
-					//fmt.Println(pb.recOrder)
-					//fmt.Println(pb.backupOrder)
-					//fmt.Println(args.SendTime)
-					pb.mu.Unlock()
-				}
-			}
-			
-		}()
+		pb.seenMap[args.Key] = args.SendNum
 		
-		//fmt.Println("putappend for backup")
-		//fmt.Println(pb.currentview.Backup == pb.me)
-		//fmt.Println(pb.currentview.Primary == pb.me)
-		//fmt.Println(args.SendNum)
-		//fmt.Println(args.Key)
-		return nil
-	}
-	
-	return fmt.Errorf("something went wrong in putappend")
-
-	/*
-
-	if pb.isprimary || args.FromPrimary {
-		pb.log[args.Key] = args.Value
-		reply.Err = "ok"
-		if !pb.isbackup && pb.currentview.Backup != "" {
+		args.FromPrimary = true
+		if pb.hasBackup {
 			//go func(){
+				var i int
 				for {
-					args.FromPrimary = true
-					ok := call(pb.currentview.Backup, "PBServer.PutAppend", args, &reply)
-					if ok == false {
-						//fmt.Println("looping")					
-						currentview, error := pb.vs.Ping(pb.viewnumber)
-						if error == nil {
-							
-							pb.currentview = currentview
-							pb.viewnumber = currentview.Viewnum
-							
-						} 
-					} else {
+					
+					ok := call(pb.currentview.Backup, "PBServer.PutAppend" , args, &reply)
+					
+					
+					if ok != false {
 						break
 					}
+					if i > 20 {
+						break
+					}
+					time.Sleep(viewservice.PingInterval)
+					i++
+					
+					
 				}
 			//}()
 			
 		}
+		pb.mu.Unlock()
+		
 		return nil
-	} else {
-		var Err error 
-		return Err
+		
+	} else if pb.isbackup {
+		//fmt.Println(pb.me + "Backup?")
+		//fmt.Println(args.NewBackup)
+		if args.NewBackup == true {
+			//fmt.Println("recieving backup dump")
+			pb.mu.Lock()
+			for key, val := range args.BackupDump{
+				fmt.Println("backupdumpwrite")
+				pb.log[key] = val
+			}
+			pb.mu.Unlock()
+		}
+		if args.FromPrimary {
+			pb.mu.Lock()
+			pb.log[args.Key] = args.Value
+			pb.seenMap[args.Key] = args.SendNum
+			pb.mu.Unlock()
+		}
+		return nil
 	}
 
-	*/
-
 	
-
-	//fmt.Println(pb.log)
-
-	
+	return fmt.Errorf("bad putappend")
 
 
 	
@@ -230,87 +168,55 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 func (pb *PBServer) tick() {
 
 	// Your code here.
+	//fmt.Println("tring to ticking")
 	
 
 	currentview, error := pb.vs.Ping(pb.viewnumber)
 	if error != nil {
-		fmt.Println("Bad ping happened")
-	} else {
+		return
+	} 
+
+	if currentview != pb.currentview {
+		//fmt.Println(currentview.Backup)
 		
-		if pb.currentview.Backup != currentview.Backup && pb.isprimary {
-			//var key string
-			//var val interface {}
-			//pb.currentview.Backup = currentview.Backup
-			//pb.mu.Lock()
-			fmt.Println(pb.log)
-			fmt.Println(pb.me)
-			fmt.Println(pb.currentview.Backup)
-			fmt.Println(pb.currentview.Primary)
-			fmt.Println(currentview.Primary)
-			fmt.Println(currentview.Backup)
-			//pb.mu.Lock()
-			pb.backupOrder = 0
-			//pb.mu.Unlock()
-			var i int64
-			i = 0
-			for key, val := range pb.log {
-				pb.mu.Lock()
-				args := &PutAppendArgs{}
-				var reply PutAppendReply
-				args.FromPrimary = true
-				args.Key = key
-				args.Value = val
-				fmt.Println(key)
-				fmt.Println(val)
-				fmt.Println(args.SendNum)
-				fmt.Println(i)
-				args.SendNum = i
-				fmt.Println(args.SendNum)
-				i++
-				args.SendTime = pb.backupOrder
-				pb.backupOrder++
-				fmt.Println(pb.backupOrder)
-				fmt.Println("sending vals to backup")
-				pb.mu.Unlock()
-				go func() {
-					for {
-					
-						ok := call(currentview.Backup, "PBServer.PutAppend", args, &reply)
-						if ok == false {
-							fmt.Println("could not sent val to backup")
-						} else {
-							break
-						}
+		if currentview.Backup != pb.currentview.Backup && pb.isprimary{
+			pb.hasBackup = true
+			args := &PutAppendArgs{}
+			var reply GetReply
+			args.BackupDump = pb.log
+			args.NewBackup = true
+			//fmt.Println(pb.me + " dumping to backup")
+			pb.mu.Lock()
+			//go func() {
+				for {
+					ok := call(currentview.Backup, "PBServer.PutAppend", args, &reply)
+					if ok != false {
+						break
 					}
-				}()
-				
-				
-			}
+					time.Sleep(viewservice.PingInterval)
+				}
+			//}()
+			pb.mu.Unlock()
 			
 		}
+		
+		
+		pb.mu.Lock()
+		pb.currentview = currentview
+		pb.viewnumber = currentview.Viewnum
+		
 
-		if pb.currentview != currentview {
-
-			pb.mu.Lock()
-			pb.currentview = currentview
-			pb.viewnumber = currentview.Viewnum
-
-
-			if currentview.Primary == pb.me {
-				pb.isprimary = true
-				pb.isbackup = false
-			} else if currentview.Backup == pb.me {
-				pb.isprimary = false
-				pb.isbackup = true
-			} else {
-				pb.isprimary = false
-				pb.isbackup = false
-			}
-			pb.mu.Unlock()
+		if pb.currentview.Primary == pb.me {
+			pb.isprimary = true
+			pb.isbackup = false
+		} else if pb.currentview.Backup == pb.me {
+			pb.isprimary = false
+			pb.isbackup = true
+		} else {
+			pb.isbackup = false
+			pb.isprimary = false
 		}
-
-
-
+		pb.mu.Unlock()
 	}
 
 }
@@ -342,7 +248,7 @@ func (pb *PBServer) isunreliable() bool {
 
 
 func StartServer(vshost string, me string) *PBServer {
-	fmt.Println("starting the pbserver!")
+	//fmt.Println("starting the pbserver!")
 	pb := new(PBServer)
 	pb.me = me
 	pb.vs = viewservice.MakeClerk(me, vshost)
@@ -350,8 +256,9 @@ func StartServer(vshost string, me string) *PBServer {
 
 	pb.backupOrder = 0
 	pb.recOrder = -1
+	pb.hasBackup = false
 	pb.log = make(map[string]string)
-	pb.seenMap = make(map[int64]bool)
+	pb.seenMap = make(map[string]int64)
 	pb.timeLog = make(map[string]time.Time)
 
 	rpcs := rpc.NewServer()

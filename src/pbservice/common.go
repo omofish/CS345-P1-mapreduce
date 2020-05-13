@@ -18,6 +18,8 @@ type PutAppendArgs struct {
 	SendNum int64
 	SendTime int
 	IsAppend bool
+	BackupDump map[string]string
+	NewBackup bool
 
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
