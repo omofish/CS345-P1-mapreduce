@@ -125,7 +125,24 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 						break
 					}
 					if i > 10 {
-						fmt.Println("dead backup")
+						currentview, error := pb.vs.Ping(pb.viewnumber)
+						if error == nil {
+							pb.currentview = currentview
+							pb.viewnumber = currentview.Viewnum
+							if pb.currentview.Primary == pb.me {
+								pb.isprimary = true
+								pb.isbackup = false
+							} else if pb.currentview.Backup == pb.me {
+								pb.isprimary = false
+								pb.isbackup = true
+							} else {
+								pb.isbackup = false
+								pb.isprimary = false
+							}
+						}
+						i = 0;
+					}
+					if pb.currentview.Backup == "" {
 						break
 					}
 					time.Sleep(viewservice.PingInterval)
@@ -146,7 +163,8 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 		if args.NewBackup == true {
 			//fmt.Println("recieving backup dump")
 			pb.mu.Lock()
-			fmt.Println("backupdumpwrite")
+			fmt.Print(pb.me)
+			fmt.Println(" | backupdumpwrite")
 			pb.log = args.BackupDump
 			pb.mu.Unlock()
 		}
@@ -207,7 +225,10 @@ func (pb *PBServer) tick() {
 						break
 					}
 					if i > 10 {
-						fmt.Println("backup probably dead")
+						currentview, error = pb.vs.Ping(pb.viewnumber)
+						i = 0	
+					}
+					if currentview.Backup == ""{
 						break
 					}
 					i++
