@@ -124,7 +124,7 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 					if ok != false {
 						break
 					}
-					if i > 10 {
+					if i > 5 {
 						currentview, error := pb.vs.Ping(pb.viewnumber)
 						if error == nil {
 							pb.currentview = currentview
@@ -220,12 +220,24 @@ func (pb *PBServer) tick() {
 			//go func() {
 			var i int
 				for {
-					ok := call(currentview.Backup, "PBServer.PutAppend", args, &reply)
+					ok := call(pb.currentview.Backup, "PBServer.PutAppend", args, &reply)
 					if ok != false {
 						break
 					}
-					if i > 10 {
+					if i > 5 {
 						currentview, error = pb.vs.Ping(pb.viewnumber)
+						pb.currentview = currentview
+						pb.viewnumber = currentview.Viewnum
+						if pb.currentview.Primary == pb.me {
+							pb.isprimary = true
+							pb.isbackup = false
+						} else if pb.currentview.Backup == pb.me {
+							pb.isprimary = false
+							pb.isbackup = true
+						} else {
+							pb.isbackup = false
+							pb.isprimary = false
+						}
 						i = 0	
 					}
 					if currentview.Backup == ""{
@@ -236,7 +248,7 @@ func (pb *PBServer) tick() {
 				}
 			//}()
 			pb.mu.Unlock()
-			
+			return
 		}
 		
 		
