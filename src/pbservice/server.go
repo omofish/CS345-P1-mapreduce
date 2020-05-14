@@ -53,7 +53,11 @@ func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 	
 	if pb.isdead() {
 		//reply.Err = fmt.Errorf("dead")
-		return nil
+		return fmt.Errorf("dead")
+	}
+
+	if !pb.isprimary && !pb.isbackup {
+		return fmt.Errorf("not a valid server")
 	}
 
 	if pb.isprimary {
@@ -78,9 +82,14 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 
 	// Your code here.
 	if pb.isdead() {
-		reply.Err = "dead"
-		return nil
+		return fmt.Errorf("dead")
 	}
+	pb.mu.Lock()
+	if !pb.isprimary && !pb.isbackup {
+		pb.mu.Unlock()
+		return fmt.Errorf("not a valid server")
+	}
+	pb.mu.Unlock()
 	
 	//fmt.Print(pb.me + " ")
 	//fmt.Println(args)
@@ -115,7 +124,8 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 					if ok != false {
 						break
 					}
-					if i > 20 {
+					if i > 10 {
+						fmt.Println("dead backup")
 						break
 					}
 					time.Sleep(viewservice.PingInterval)
@@ -136,10 +146,8 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 		if args.NewBackup == true {
 			//fmt.Println("recieving backup dump")
 			pb.mu.Lock()
-			for key, val := range args.BackupDump{
-				fmt.Println("backupdumpwrite")
-				pb.log[key] = val
-			}
+			fmt.Println("backupdumpwrite")
+			pb.log = args.BackupDump
 			pb.mu.Unlock()
 		}
 		if args.FromPrimary {
@@ -170,9 +178,13 @@ func (pb *PBServer) tick() {
 	// Your code here.
 	//fmt.Println("tring to ticking")
 	
-
+	
 	currentview, error := pb.vs.Ping(pb.viewnumber)
 	if error != nil {
+		pb.mu.Lock()
+		pb.isprimary = false
+		pb.isbackup = false
+		pb.mu.Unlock()
 		return
 	} 
 
@@ -188,11 +200,17 @@ func (pb *PBServer) tick() {
 			//fmt.Println(pb.me + " dumping to backup")
 			pb.mu.Lock()
 			//go func() {
+			var i int
 				for {
 					ok := call(currentview.Backup, "PBServer.PutAppend", args, &reply)
 					if ok != false {
 						break
 					}
+					if i > 10 {
+						fmt.Println("backup probably dead")
+						break
+					}
+					i++
 					time.Sleep(viewservice.PingInterval)
 				}
 			//}()
@@ -218,6 +236,7 @@ func (pb *PBServer) tick() {
 		}
 		pb.mu.Unlock()
 	}
+
 
 }
 
