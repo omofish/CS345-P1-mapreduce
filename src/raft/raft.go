@@ -37,14 +37,6 @@ type ApplyMsg struct {
 	CommandIndex int
 }
 
-// JASON'S CODE START
-type LogEntry struct {
-	Command            interface{}
-	termLeaderReceived int
-}
-
-// JASON'S CODE END
-
 //
 // A Go object implementing a single Raft peer.
 //
@@ -145,43 +137,65 @@ func (rf *Raft) readPersist(data []byte) {
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
-//
+// IMPL: JASON
 type RequestVoteArgs struct {
-
-	// JASON'S CODE START
-
-	term         int
-	candidateID  int
-	lastLogIndex int
-	lastLogTerm  int
-
-	// JASON'S CODE END
+	Term         int
+	CandidateID  int
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 //
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
-//
+// IMPL: JASON
 type RequestVoteReply struct {
+	Term        int
+	VoteGranted bool
+}
 
-	// JASON'S CODE START
-	// Invoked by leader
+// LogEntry struct
+// IMPL: JASON
+type LogEntry struct {
+	Command            interface{}
+	termLeaderReceived int
+}
 
-	term         int
-	leaderID     int
-	prevLogIndex int
-	prevLogTerm  int
-	entries      []*LogEntry
-	leaderCommit int
+//
+// AppendEntriesRPC Arguments structure
+// Invoked by leader
+// IMPL: JASON
+type AppendEntriesArgs struct {
+	Term         int
+	LeaderID     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	Entries      []*LogEntry
+	LeaderCommit int
+}
 
-	// JASON'S CODE END
+//
+// AppendEntries RPC Reply structure
+// IMPL: JASON
+type AppendEntriesReply struct {
+	Term    int
+	success bool
 }
 
 //
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (3, 4).
+
+	// JASON'S CODE START
+	// Create RequestVoteArgs
+	rva := RequestVoteArgs{}
+	rva.Term = rf.currentTerm
+	rva.CandidateID = rf.me
+
+	// TODO: set last log entry and last log index
+
+	// JASON'S CODE END
 }
 
 //
@@ -288,6 +302,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// 		 now since it must be reinitialised after election
 	rf.nextIndex = []int{}
 	rf.matchIndex = []int{}
+
+	// TODO: create goroutine to kick off leader election by sending out RequestVotes
+	// if have not heard from peers for too long
 
 	// JASON'S CODE END
 
