@@ -39,6 +39,8 @@ type ApplyMsg struct {
 
 // JASON'S CODE START
 type LogEntry struct {
+	Command            interface{}
+	termLeaderReceived int
 }
 
 // JASON'S CODE END
@@ -89,9 +91,9 @@ func (rf *Raft) GetState() (int, bool) {
 	// JASON'S CODE START
 	term = rf.currentTerm
 	if rf.position == 3 {
-		leader = true
+		isleader = true
 	} else {
-		leader = false
+		isleader = false
 	}
 	// JASON'S CODE END
 
@@ -112,6 +114,8 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+
+	// JASON: position, currentTerm, votedFor and log to be saved
 }
 
 //
@@ -134,6 +138,8 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+
+	// JASON: position, currentTerm, votedFor and log to be read
 }
 
 //
@@ -264,7 +270,26 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persister = persister
 	rf.me = me
 
-	// Your initialization code here (3, 4).
+	// JASON'S CODE START
+	rf.applyCh = applyCh
+
+	// init as follower
+	rf.position = 0
+
+	rf.currentTerm = 0
+	// commented out because initalising an int with nil isnt allowed
+	// rf.votedFor = nil
+	rf.log = []*LogEntry{}
+
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+
+	// TODO: ensure that this actually needs to be initialised
+	// 		 now since it must be reinitialised after election
+	rf.nextIndex = []int{}
+	rf.matchIndex = []int{}
+
+	// JASON'S CODE END
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
