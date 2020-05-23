@@ -61,6 +61,8 @@ type Raft struct {
 	// JASON'S CODE START
 
 	// persistent states (might need to be saved in persister instead)
+	// 1 - follower, 2 - candidate, 3 - leader NOTE this wasnt in the paper but they didn't really specify how else to indicate leadership for peers
+	position    int
 	currentTerm int
 	votedFor    int
 	log         []*LogEntry
@@ -84,7 +86,14 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 
-	// Your code here (3).
+	// JASON'S CODE START
+	term = rf.currentTerm
+	if rf.position == 3 {
+		leader = true
+	} else {
+		leader = false
+	}
+	// JASON'S CODE END
 
 	return term, isleader
 }
@@ -132,7 +141,15 @@ func (rf *Raft) readPersist(data []byte) {
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
-	// Your data here (3, 4).
+
+	// JASON'S CODE START
+
+	term         int
+	candidateID  int
+	lastLogIndex int
+	lastLogTerm  int
+
+	// JASON'S CODE END
 }
 
 //
@@ -140,7 +157,18 @@ type RequestVoteArgs struct {
 // field names must start with capital letters!
 //
 type RequestVoteReply struct {
-	// Your data here (3).
+
+	// JASON'S CODE START
+	// Invoked by leader
+
+	term         int
+	leaderID     int
+	prevLogIndex int
+	prevLogTerm  int
+	entries      []*LogEntry
+	leaderCommit int
+
+	// JASON'S CODE END
 }
 
 //
