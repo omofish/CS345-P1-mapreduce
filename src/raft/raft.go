@@ -17,8 +17,11 @@ package raft
 //
 
 import (
+	"fmt"
 	"labrpc"
+	"math/rand"
 	"sync"
+	"time"
 )
 
 // import "bytes"
@@ -142,7 +145,7 @@ type RequestVoteArgs struct {
 	Term         int
 	CandidateID  int
 	LastLogIndex int
-	LastLogTerm  int
+	LastLogTerm  *LogEntry
 }
 
 //
@@ -186,16 +189,6 @@ type AppendEntriesReply struct {
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-
-	// JASON'S CODE START
-	// Create RequestVoteArgs
-	rva := RequestVoteArgs{}
-	rva.Term = rf.currentTerm
-	rva.CandidateID = rf.me
-
-	// TODO: set last log entry and last log index
-
-	// JASON'S CODE END
 }
 
 //
@@ -229,6 +222,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	fmt.Print(rf.me)
 	return ok
 }
 
@@ -291,20 +285,58 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.position = 0
 
 	rf.currentTerm = 0
-	// commented out because initalising an int with nil isnt allowed
+	// removed because initalising an int with nil isnt allowed
 	// rf.votedFor = nil
 	rf.log = []*LogEntry{}
 
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 
-	// TODO: ensure that this actually needs to be initialised
-	// 		 now since it must be reinitialised after election
 	rf.nextIndex = []int{}
 	rf.matchIndex = []int{}
 
 	// TODO: create goroutine to kick off leader election by sending out RequestVotes
 	// if have not heard from peers for too long
+
+	// create random ticker between 50ms and 300ms (arbitrary)
+	timeoutTicker := time.NewTicker(time.Duration(rand.Intn(250))*time.Millisecond + 50*time.Millisecond)
+	leaderReply := make(chan bool)
+
+	go func() {
+		for {
+			select {
+			case <-leaderReply:
+				// Reset ticker if AppendEntries received
+				// TODO: receiving AppendEntries should trigger this case
+				timeoutTicker = time.NewTicker(time.Duration(rand.Intn(250))*time.Millisecond + 50*time.Millisecond)
+			case <-timeoutTicker.C:
+				// Send out request votes
+
+				// Create RequestVoteArgs
+				rva := RequestVoteArgs{Term: rf.currentTerm, CandidateID: rf.me}
+				if len(rf.log) > 0 {
+					rva.LastLogIndex = len(rf.log) - 1
+					rva.LastLogTerm = rf.log[rva.LastLogIndex]
+				}
+
+				votes := 0
+				var reply RequestVoteReply
+
+				// Request Votes
+				for i := 0; i < len(peers); i++ {
+					ok := rf.sendRequestVote(i, &rva, &reply)
+					if ok {
+						votes++
+					}
+
+					// become leader if more than majority of votes
+					if votes > len(peers)/2 {
+						rf.position = 3
+					}
+				}
+			}
+		}
+	}()
 
 	// JASON'S CODE END
 
