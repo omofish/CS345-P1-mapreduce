@@ -20,6 +20,7 @@ import (
 	"labrpc"
 	"sync"
 )
+
 // import "bytes"
 // import "labgob"
 
@@ -36,6 +37,12 @@ type ApplyMsg struct {
 	CommandIndex int
 }
 
+// JASON'S CODE START
+type LogEntry struct {
+}
+
+// JASON'S CODE END
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -45,12 +52,28 @@ type Raft struct {
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
 
-	applyCh chan ApplyMsg         // Channel for the commit to the state machine
+	applyCh chan ApplyMsg // Channel for the commit to the state machine
 
 	// Your data here (3, 4).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
+	// JASON'S CODE START
+
+	// persistent states (might need to be saved in persister instead)
+	currentTerm int
+	votedFor    int
+	log         []*LogEntry
+
+	// volatile states
+	commitIndex int
+	lastApplied int
+
+	// leader volatile states
+	nextIndex  []int
+	matchIndex []int
+
+	// JASON'S CODE END
 }
 
 //
