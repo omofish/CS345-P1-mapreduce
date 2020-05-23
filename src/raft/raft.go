@@ -300,15 +300,17 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// create random ticker between 50ms and 300ms (arbitrary)
 	timeoutTicker := time.NewTicker(time.Duration(rand.Intn(250))*time.Millisecond + 50*time.Millisecond)
-	leaderReply := make(chan bool)
+	heartbeat := make(chan bool)
 
 	go func() {
 		for {
 			select {
-			case <-leaderReply:
+			// case when heartbeat received from leader
+			case <-heartbeat:
 				// Reset ticker if AppendEntries received
 				// TODO: receiving AppendEntries should trigger this case
 				timeoutTicker = time.NewTicker(time.Duration(rand.Intn(250))*time.Millisecond + 50*time.Millisecond)
+			// case when no heartbeat from leader
 			case <-timeoutTicker.C:
 				// Send out request votes
 
@@ -318,8 +320,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					rva.LastLogIndex = len(rf.log) - 1
 					rva.LastLogTerm = rf.log[rva.LastLogIndex]
 				}
-
-				votes := 0
+				// vote for self
+				rf.votedFor = rf.me
+				votes := 1
 				var reply RequestVoteReply
 
 				// Request Votes
