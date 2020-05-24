@@ -177,7 +177,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// decide if will grant vote
 	// Reply false if term < currentTerm
 	// if votedFor is null or candidateId, and candidate’s log is atleast as up-to-date as receiver’s log, grant vote
-	if rf.ownTermGreaterThan(args.Term) {
+	if !rf.ownTermSmallerThan(args.Term) {
 		reply.VoteGranted = false
 		fmt.Printf("\nNode %d denied vote for candidate %d", rf.me, args.CandidateID)
 	} else if (rf.votedFor == -1 || rf.votedFor == args.CandidateID) && (args.LastLogIndex >= len(rf.log)-1) {
@@ -225,7 +225,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	var vote bool
 	if ok {
 		// check if reply term is greater.
-		rf.ownTermGreaterThan(reply.Term)
+		rf.ownTermSmallerThan(reply.Term)
 
 		vote = reply.VoteGranted
 	} else {
@@ -261,12 +261,12 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	// reply with current term
 	reply.Term = rf.currentTerm
-	// check if reply term is greater
-	ok := rf.ownTermGreaterThan(args.Term)
 
-	if !ok {
+	if rf.currentTerm > args.Term {
+		fmt.Printf("\nNode %d rejects leader %d, %d > %d", rf.me, args.LeaderID, rf.currentTerm, args.Term)
 		reply.Success = false
-		fmt.Printf("Node %d rejects leader %d", rf.me, args.LeaderID)
+	} else {
+		reply.Success = true
 	}
 
 	// if follower/candidate, reset election timeout
@@ -281,6 +281,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 // IMPL: JASON
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	if ok {
+		rf.ownTermSmallerThan(reply.Term)
+	}
+
 	return ok
 }
 
@@ -357,11 +361,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	fmt.Printf("\nNode %d initialized", rf.me)
 
 	// start election timeout timer
-	rf.electionTimeoutTimer = rf.getTimer("election")
+	rf.electionTimeoutTimer = time.NewTimer(rf.getDuration("election"))
 
 	// init heartbeat timer, but dont fire
-	rf.heartbeatTimer = rf.getTimer("heartbeat")
-	rf.heartbeatTimer.Stop()
+	rf.heartbeatTimer = time.NewTimer(rf.getDuration("heartbeat"))
 
 	go func() {
 		for {
@@ -468,40 +471,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	return rf
 }
 
-// create Timer
-func (rf *Raft) getTimer(timerType string) *time.Timer {
-	var t, r int
-
-	switch timerType {
-	// 200ms + random(100ms)
-	case "election":
-		t = 200
-		r = 100
-	// 200ms
-	case "heartbeat":
-		t = 200
-		r = 0
-	}
-
-	duration := time.Duration(t) * time.Millisecond
-	var randomDuration time.Duration
-	if r > 0 {
-		randomDuration = time.Duration(rand.Intn(r)) * time.Millisecond
-	}
-
-	return time.NewTimer(duration + randomDuration)
-}
-
 func (rf *Raft) getDuration(timerType string) time.Duration {
 	var t, r int
 	switch timerType {
 	// 200ms + random(600ms)
 	case "election":
-		t = 200
-		r = 600
+		t = 160
+		r = 200
 	// 150ms
 	case "heartbeat":
-		t = 150
+		t = 120
 		r = 0
 	}
 
@@ -515,14 +494,17 @@ func (rf *Raft) getDuration(timerType string) time.Duration {
 }
 
 // If other term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
-func (rf *Raft) ownTermGreaterThan(other int) bool {
-	if rf.currentTerm >= other {
+func (rf *Raft) ownTermSmallerThan(other int) bool {
+	rf.mu.Lock()
+	if other > rf.currentTerm {
+		fmt.Printf("\nNode %d made follower, %d > %d", rf.me, other, rf.currentTerm)
+		rf.heartbeatTimer.Stop()
+		rf.currentTerm = other
+		rf.position = 1
+		rf.votedFor = -1
+		rf.mu.Unlock()
 		return true
 	}
-	fmt.Printf("\nNode %d made follower, %d > %d", rf.me, other, rf.currentTerm)
-	rf.heartbeatTimer.Stop()
-	rf.currentTerm = other
-	rf.position = 1
-	rf.votedFor = -1
+	rf.mu.Unlock()
 	return false
 }

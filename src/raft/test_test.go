@@ -31,8 +31,6 @@ func TestInitialElection3(t *testing.T) {
 	// is a leader elected?
 	cfg.checkOneLeader()
 
-	fmt.Print("Leader check passed")
-
 	// sleep a bit to avoid racing with followers learning of the
 	// election, then check that all peers agree on the term.
 	time.Sleep(50 * time.Millisecond)
