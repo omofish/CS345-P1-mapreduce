@@ -161,7 +161,7 @@ type RequestVoteReply struct {
 // IMPL: JASON
 type LogEntry struct {
 	Command            interface{}
-	termLeaderReceived int
+	TermLeaderReceived int
 }
 
 //
@@ -187,8 +187,28 @@ type AppendEntriesReply struct {
 
 //
 // example RequestVote RPC handler.
-//
+// IMPL: JASON
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	// fmt.Print(args.CandidateID)
+	// reply with current term
+	reply.Term = rf.currentTerm
+	// check if reply term is greater
+	rf.termGreaterThan(args.Term)
+
+	// decide if will grant vote
+	// Reply false if term < currentTerm
+	// if votedFor is null or candidateId, and candidate’s log is atleast as up-to-date as receiver’s log, grant vote
+	if args.Term < rf.currentTerm {
+		reply.VoteGranted = false
+	} else if (rf.votedFor == -1 || rf.votedFor == args.CandidateID) && (args.LastLogIndex >= len(rf.log)-1) {
+		fmt.Printf("\nNode %d voted for candidate %d", rf.me, args.CandidateID)
+		rf.votedFor = args.CandidateID
+		reply.VoteGranted = true
+	} else {
+		reply.VoteGranted = false
+		fmt.Printf("\nNode %d denied vote for candidate %d", rf.me, args.CandidateID)
+	}
+
 }
 
 //
@@ -222,8 +242,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	fmt.Print(rf.me)
-	return ok
+	var vote bool
+	if ok {
+		// check if reply term is greater.
+		rf.termGreaterThan(reply.Term)
+
+		vote = reply.VoteGranted
+	} else {
+		vote = false
+	}
+	return vote
 }
 
 //
@@ -279,14 +307,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// JASON'S CODE START
+
 	rf.applyCh = applyCh
 
 	// init as follower
 	rf.position = 0
 
 	rf.currentTerm = 0
-	// removed because initalising an int with nil isnt allowed
-	// rf.votedFor = nil
+	// init votedFor as -1 because nil value of ints is 0
+	rf.votedFor = -1
 	rf.log = []*LogEntry{}
 
 	rf.commitIndex = 0
@@ -295,24 +324,43 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex = []int{}
 	rf.matchIndex = []int{}
 
-	// TODO: create goroutine to kick off leader election by sending out RequestVotes
-	// if have not heard from peers for too long
+	// fmt.Printf("\nNode %d initialized", rf.me)
 
-	// create random ticker between 50ms and 300ms (arbitrary)
-	timeoutTicker := time.NewTicker(time.Duration(rand.Intn(250))*time.Millisecond + 50*time.Millisecond)
-	heartbeat := make(chan bool)
+	// create election timeout timer
+	electionTimeoutTimer := rf.getTimer("election")
+	var heartbeatTimer
+	reset := make(chan bool)
 
 	go func() {
 		for {
 			select {
-			// case when heartbeat received from leader
-			case <-heartbeat:
+			// TODO: code that runs when AppendEntries received from leader
+			case <-reset:
 				// Reset ticker if AppendEntries received
 				// TODO: receiving AppendEntries should trigger this case
-				timeoutTicker = time.NewTicker(time.Duration(rand.Intn(250))*time.Millisecond + 50*time.Millisecond)
-			// case when no heartbeat from leader
-			case <-timeoutTicker.C:
-				// Send out request votes
+				electionTimeoutTimer = rf.getTimer("election")
+
+			// code below is run whenever election timeout elapses
+			case <-electionTimeoutTimer.C:
+
+				// ignore election if already leader
+				if rf.position == 3 {
+					continue
+				}
+
+				// if follower/candidate, become candidate
+				rf.position = 2
+
+				// If vote granted to candidate, convert to follower
+				if rf.votedFor == rf.me || rf.votedFor != -1 {
+					rf.position = 1
+					continue
+				}
+
+				// START ELECTION
+
+				// Increment current term
+				rf.currentTerm++
 
 				// Create RequestVoteArgs
 				rva := RequestVoteArgs{Term: rf.currentTerm, CandidateID: rf.me}
@@ -320,23 +368,36 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					rva.LastLogIndex = len(rf.log) - 1
 					rva.LastLogTerm = rf.log[rva.LastLogIndex]
 				}
-				// vote for self
+
+				// Vote for self
 				rf.votedFor = rf.me
 				votes := 1
-				var reply RequestVoteReply
 
-				// Request Votes
+				// Reset election timer
+				electionTimeoutTimer = rf.getTimer("election")
+
+				// Send RequestVote RPCs to all other servers
+				var reply RequestVoteReply
 				for i := 0; i < len(peers); i++ {
+					if i == rf.me {
+						fmt.Printf("Candidate %d votes for itself", rf.me)
+						continue
+					}
+
 					ok := rf.sendRequestVote(i, &rva, &reply)
 					if ok {
 						votes++
 					}
-
-					// become leader if more than majority of votes
-					if votes > len(peers)/2 {
-						rf.position = 3
-					}
 				}
+
+				// If votes received from majority of servers: become leader
+				if votes > len(peers)/2 {
+					rf.position = 3
+					heartbeatTimer := rf.getTimer("heartbeat")
+				}
+
+			case <-heartbeatTimer.C:
+
 			}
 		}
 	}()
@@ -347,4 +408,29 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	return rf
+}
+
+// create Timer
+func (rf *Raft) getTimer(timerType string) *time.Timer {
+	var t, r int
+	switch timerType {
+	// 200ms + random(100ms)
+	case "election":
+		t = 200
+		r = 100
+	// 200ms
+	case "heartbeat":
+		t = 200
+	}
+	return time.NewTimer(time.Duration(rand.Intn(r))*time.Millisecond + time.Duration(t)*time.Millisecond)
+}
+
+// If other term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
+func (rf *Raft) termGreaterThan(other int) bool {
+	if other > rf.currentTerm {
+		rf.currentTerm = other
+		rf.position = 1
+		return false
+	}
+	return true
 }
