@@ -21,6 +21,7 @@ import (
 	"labrpc"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -65,10 +66,9 @@ type Raft struct {
 	log         []*LogEntry
 
 	// volatile states
-	commitIndex          int
-	lastApplied          int
-	electionTimeoutTimer *time.Timer
-	heartbeatTimer       *time.Timer
+	commitIndex   int
+	lastApplied   int
+	electionReset time.Time
 
 	// leader volatile states
 	nextIndex  []int
@@ -86,6 +86,8 @@ func (rf *Raft) GetState() (int, bool) {
 	var isleader bool
 
 	// JASON'S CODE START
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	term = rf.currentTerm
 	if rf.position == 3 {
 		isleader = true
@@ -170,25 +172,29 @@ type LogEntry struct {
 // example RequestVote RPC handler.
 // IMPL: JASON
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// fmt.Print(args.CandidateID)
-	// reply with current term
-	reply.Term = rf.currentTerm
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-	// decide if will grant vote
-	// Reply false if term < currentTerm
-	// if votedFor is null or candidateId, and candidate’s log is atleast as up-to-date as receiver’s log, grant vote
-	if !rf.ownTermSmallerThan(args.Term) {
-		reply.VoteGranted = false
-		fmt.Printf("\nNode %d denied vote for candidate %d", rf.me, args.CandidateID)
-	} else if (rf.votedFor == -1 || rf.votedFor == args.CandidateID) && (args.LastLogIndex >= len(rf.log)-1) {
-		fmt.Printf("\nNode %d voted for candidate %d", rf.me, args.CandidateID)
-		rf.votedFor = args.CandidateID
-		reply.VoteGranted = true
-	} else {
-		reply.VoteGranted = false
-		fmt.Printf("\nNode %d denied vote for candidate %d", rf.me, args.CandidateID)
+	// become follower if own term outdated
+	if args.Term > rf.currentTerm {
+		rf.becomeFollower(args.Term)
+		fmt.Printf("\n%s %d term %d < candidate term %d", rf.getPosition(), rf.me, rf.currentTerm, args.Term)
 	}
 
+	// if terms match and has not voted/already voted for candidate, grant vote. else dont.
+	if args.Term == rf.currentTerm &&
+		(rf.votedFor == -1 || rf.votedFor == args.CandidateID) {
+		fmt.Printf("\n%s %d voted for candidate %d", rf.getPosition(), rf.me, args.CandidateID)
+		reply.VoteGranted = true
+		rf.votedFor = args.CandidateID
+		rf.electionReset = time.Now()
+	} else {
+		fmt.Printf("\n%s %d denied vote to candidate %d", rf.getPosition(), rf.me, args.CandidateID)
+		reply.VoteGranted = false
+	}
+
+	reply.Term = rf.currentTerm
+	return
 }
 
 //
@@ -222,16 +228,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // IMPL: JASON
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	var vote bool
-	if ok {
-		// check if reply term is greater.
-		rf.ownTermSmallerThan(reply.Term)
-
-		vote = reply.VoteGranted
-	} else {
-		vote = false
-	}
-	return vote
+	return ok
 }
 
 //
@@ -259,20 +256,29 @@ type AppendEntriesReply struct {
 // AppendEntries RPC handler.
 // IMPL: JASON
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	// reply with current term
-	reply.Term = rf.currentTerm
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	fmt.Printf("\n%s %d received heartbeat from leader %d", rf.getPosition(), rf.me, args.LeaderID)
 
-	if rf.currentTerm > args.Term {
-		fmt.Printf("\nNode %d rejects leader %d, %d > %d", rf.me, args.LeaderID, rf.currentTerm, args.Term)
+	// become follower if own term outdated
+	if args.Term > rf.currentTerm {
+		rf.becomeFollower(args.Term)
+		fmt.Printf("\n%s %d term %d < node term %d", rf.getPosition(), rf.me, rf.currentTerm, args.Term)
 		reply.Success = false
-	} else {
+	}
+
+	if args.Term == rf.currentTerm {
+		// if not already a follower, become follower
+		fmt.Printf("\n%s %d acknowledges authority of leader %d", rf.getPosition(), rf.me, args.LeaderID)
+		if rf.position != 1 {
+			rf.becomeFollower(args.Term)
+		}
+		rf.electionReset = time.Now()
 		reply.Success = true
 	}
 
-	// if follower/candidate, reset election timeout
-	if rf.position <= 2 {
-		rf.electionTimeoutTimer.Reset(rf.getDuration("election"))
-	}
+	reply.Term = rf.currentTerm
+	return
 
 }
 
@@ -281,9 +287,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 // IMPL: JASON
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	if ok {
-		rf.ownTermSmallerThan(reply.Term)
-	}
 
 	return ok
 }
@@ -344,167 +347,248 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.applyCh = applyCh
 
-	// init as follower
+	// persistent states
 	rf.position = 1
-
 	rf.currentTerm = 0
-	// init votedFor as -1 because nil value of ints is 0
 	rf.votedFor = -1
 	rf.log = []*LogEntry{}
 
+	// volatile states
 	rf.commitIndex = 0
 	rf.lastApplied = 0
+	rf.electionReset = time.Now()
 
+	// leader volatile states
 	rf.nextIndex = []int{}
 	rf.matchIndex = []int{}
 
-	fmt.Printf("\nNode %d initialized", rf.me)
-
-	// start election timeout timer
-	rf.electionTimeoutTimer = time.NewTimer(rf.getDuration("election"))
-
-	// init heartbeat timer, but dont fire
-	rf.heartbeatTimer = time.NewTimer(rf.getDuration("heartbeat"))
-
-	go func() {
-		for {
-			select {
-
-			// code below is run whenever election timeout elapses
-			case <-rf.electionTimeoutTimer.C:
-				fmt.Printf("\nNode %d of position %d election timeout. Starting election", rf.me, rf.position)
-
-				// ignore election if already leader
-				if rf.position == 3 {
-					fmt.Printf("\nNode %d is already leader\n", rf.me)
-					rf.electionTimeoutTimer.Stop()
-					continue
-				} else {
-					// if follower/candidate, become candidate
-					rf.position = 2
-					rf.votedFor = -1
-				}
-
-				// // If vote granted to candidate, convert to follower
-				// if rf.votedFor == rf.me || rf.votedFor != -1 {
-				// 	rf.position = 1
-				// 	continue
-				// }
-
-				// START ELECTION
-				fmt.Printf("\nCandidate %d is starting election", rf.me)
-
-				// Increment current term
-				rf.currentTerm++
-
-				// Create RequestVoteArgs
-				args := RequestVoteArgs{Term: rf.currentTerm, CandidateID: rf.me}
-				if len(rf.log) > 0 {
-					args.LastLogIndex = len(rf.log) - 1
-					args.LastLogTerm = rf.log[args.LastLogIndex]
-				}
-
-				// Vote for self
-				fmt.Printf("\nCandidate %d votes for itself", rf.me)
-				rf.votedFor = rf.me
-				votes := 1
-
-				// Reset election timer
-				rf.electionTimeoutTimer.Reset(rf.getDuration("election"))
-
-				// Send RequestVote RPCs to all other servers
-				var reply RequestVoteReply
-				for i := 0; i < len(peers); i++ {
-					if i == rf.me {
-						continue
-					}
-
-					ok := rf.sendRequestVote(i, &args, &reply)
-					if ok {
-						votes++
-					}
-				}
-
-				// If votes received from majority of servers: become leader
-				if votes > len(peers)/2 {
-					fmt.Printf("\nNode %d elected leader", rf.me)
-					rf.position = 3
-					rf.heartbeatTimer.Reset(0)
-					rf.electionTimeoutTimer.Stop()
-				} else {
-					fmt.Printf("\nNode %d failed to be elected", rf.me)
-					rf.electionTimeoutTimer.Reset(rf.getDuration("election"))
-				}
-
-			// code below is only run by leader
-			case <-rf.heartbeatTimer.C:
-
-				// if not leader, continue
-				if rf.position != 3 {
-					continue
-				}
-				fmt.Printf("\nNode %d sends heartbeat", rf.me)
-
-				// Create AppendEntriesArgs
-				args := AppendEntriesArgs{Term: rf.currentTerm, LeaderID: rf.me}
-
-				// Send AppendEntries RPCs to all other servers
-				var reply AppendEntriesReply
-				for i := 0; i < len(peers); i++ {
-					if i == rf.me {
-						continue
-					}
-
-					rf.sendAppendEntries(i, &args, &reply)
-				}
-				rf.heartbeatTimer.Reset(rf.getDuration("heartbeat"))
-
-			}
-		}
-	}()
-
-	// JASON'S CODE END
+	fmt.Printf("\n\nNode %d initialized", rf.me)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
+	go rf.startElectionTimer()
+
+	// JASON'S CODE END
 	return rf
 }
 
-func (rf *Raft) getDuration(timerType string) time.Duration {
-	var t, r int
-	switch timerType {
-	// 200ms + random(600ms)
-	case "election":
-		t = 160
-		r = 200
-	// 150ms
-	case "heartbeat":
-		t = 120
-		r = 0
-	}
+// startElectionTimer runs a timer that will signal when a follower should start an election again
+func (rf *Raft) startElectionTimer() {
+	timeoutDuration := rf.getDuration("election")
+	rf.mu.Lock()
+	currentTerm := rf.currentTerm
+	rf.mu.Unlock()
 
-	duration := time.Duration(t) * time.Millisecond
-	var randomDuration time.Duration
-	if r > 0 {
-		randomDuration = time.Duration(rand.Intn(r)) * time.Millisecond
-	}
+	// every 10ms, run loop to check if everything is ok
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		<-ticker.C
 
-	return duration + randomDuration
+		rf.mu.Lock()
+		// exit if leader
+		if rf.position == 3 {
+			fmt.Printf("\nwhile %s %d, term %d in election timer, stopping", rf.getPosition(), rf.me, currentTerm)
+			rf.mu.Unlock()
+			return
+		}
+
+		// exit if terms mismatch (for concurrency)
+		if currentTerm != rf.currentTerm {
+			fmt.Printf("\nwhile %s %d in election timer, terms mismatch %d != %d, stopping", rf.getPosition(), rf.me, currentTerm, rf.currentTerm)
+			rf.mu.Unlock()
+			return
+		}
+
+		// run election after time has elapsed
+		if elapsed := time.Since(rf.electionReset); elapsed >= timeoutDuration {
+			fmt.Printf("\nwhile %s %d, term %d in election timer, stopping", rf.getPosition(), rf.me, currentTerm)
+			rf.startElection()
+			rf.mu.Unlock()
+			return
+		}
+		rf.mu.Unlock()
+	}
 }
 
-// If other term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
-func (rf *Raft) ownTermSmallerThan(other int) bool {
-	rf.mu.Lock()
-	if other > rf.currentTerm {
-		fmt.Printf("\nNode %d made follower, %d > %d", rf.me, other, rf.currentTerm)
-		rf.heartbeatTimer.Stop()
-		rf.currentTerm = other
-		rf.position = 1
-		rf.votedFor = -1
-		rf.mu.Unlock()
-		return true
+// startElection lets the node become a candidate and start an election
+func (rf *Raft) startElection() {
+	rf.position = 2
+	rf.currentTerm++
+	// save current term
+	currentTerm := rf.currentTerm
+	rf.electionReset = time.Now()
+	rf.votedFor = rf.me
+	fmt.Printf("\nnode %d becomes %s in term %d, starting election", rf.me, rf.getPosition(), currentTerm)
+
+	// vote for itself
+	var votesReceived int32
+	votesReceived = 1
+
+	// send RequestVote RPCs to other nodes
+	for nPeer := 0; nPeer < len(rf.peers); nPeer++ {
+		// do note request vote from self
+		if nPeer == rf.me {
+			continue
+		}
+
+		go func(nPeer int) {
+
+			// set args and reply
+			args := RequestVoteArgs{
+				Term:        currentTerm,
+				CandidateID: rf.me,
+			}
+			var reply RequestVoteReply
+
+			fmt.Printf("\n%s %d requesting vote from node %d", rf.getPosition(), rf.me, nPeer)
+			ok := rf.sendRequestVote(nPeer, &args, &reply)
+			if ok {
+				rf.mu.Lock()
+				defer rf.mu.Unlock()
+				fmt.Printf("\nreceived RequestVoteReply %+v", reply)
+
+				// exit if candidate changes state midway
+				if rf.position != 2 {
+					fmt.Printf("\nwhile %s %d waiting for vote to return, lost candidacy", rf.getPosition(), rf.me)
+					return
+				}
+
+				// exit if terms mismatch (for concurrency)
+				if currentTerm != rf.currentTerm {
+					fmt.Printf("\nwhile %s %d requesting votes, terms mismatch %d != %d, stopping", rf.getPosition(), rf.me, currentTerm, rf.currentTerm)
+					return
+				}
+
+				if reply.VoteGranted {
+					votes := int(atomic.AddInt32(&votesReceived, 1))
+					if votes*2 > len(rf.peers) {
+						fmt.Printf("\n%s %d won election", rf.getPosition(), rf.me)
+						rf.becomeLeader()
+						return
+					}
+				}
+
+			}
+		}(nPeer)
+
 	}
+
+	// run election timer in case of stalemate
+	go rf.startElectionTimer()
+}
+
+// sendHeartbeats sends heartbeats to all nodes
+func (rf *Raft) sendHeartbeats() {
+	rf.mu.Lock()
+	// save current term
+	currentTerm := rf.currentTerm
 	rf.mu.Unlock()
-	return false
+	for nPeer := 0; nPeer < len(rf.peers); nPeer++ {
+		// do note send heartbeat to self
+		if nPeer == rf.me {
+			continue
+		}
+
+		go func(nPeer int) {
+
+			// set args and reply
+			args := AppendEntriesArgs{
+				Term:     currentTerm,
+				LeaderID: rf.me,
+			}
+			var reply AppendEntriesReply
+
+			fmt.Printf("\n%s %d sending heartbeat to node %d", rf.getPosition(), rf.me, nPeer)
+			ok := rf.sendAppendEntries(nPeer, &args, &reply)
+			if ok {
+				rf.mu.Lock()
+				defer rf.mu.Unlock()
+				fmt.Printf("\nreceived AppendEntriesReply %+v", reply)
+
+				// become follower if out of date
+				if reply.Term > currentTerm {
+					fmt.Printf("\nnode %d term > %s %d's current term %d", nPeer, rf.getPosition(), rf.me, currentTerm)
+					rf.becomeFollower(reply.Term)
+					return
+				}
+
+				// exit if terms mismatch (for concurrency)
+				if currentTerm != rf.currentTerm {
+					fmt.Printf("\nwhile %s %d sending heartbeat, terms mismatch %d != %d, stopping", rf.getPosition(), rf.me, currentTerm, rf.currentTerm)
+					return
+				}
+
+			}
+		}(nPeer)
+
+	}
+}
+
+// BECOMES
+
+// becomeLeader changes a node into a leader and starts a ticker to make it send out heartbeats
+func (rf *Raft) becomeLeader() {
+	rf.position = 3
+	fmt.Printf("\n%s %d becomes leader", rf.getPosition(), rf.me)
+
+	go func() {
+		ticker := time.NewTicker(rf.getDuration("heartbeat"))
+		defer ticker.Stop()
+
+		// send heartbeats while leader
+		rf.sendHeartbeats()
+
+		<-ticker.C
+
+		rf.mu.Lock()
+		if rf.position != 3 {
+			rf.mu.Unlock()
+			return
+		}
+		rf.mu.Unlock()
+	}()
+
+}
+
+// becomeFollower changes a node into a follower, resets its vote and starts its electionTimer
+func (rf *Raft) becomeFollower(term int) {
+	fmt.Printf("\n%s %d becomes follower", rf.getPosition(), rf.me)
+	rf.position = 1
+	rf.currentTerm = term
+	rf.votedFor = -1
+	rf.electionReset = time.Now()
+
+	go rf.startElectionTimer()
+}
+
+// GETS
+
+// getDuration returns the time of a node's ticker for election or heartbeat
+func (rf *Raft) getDuration(timerType string) time.Duration {
+	var duration time.Duration
+	switch timerType {
+	case "election":
+		duration = time.Duration(200+rand.Intn(200)) * time.Millisecond
+
+	// 150ms
+	case "heartbeat":
+		duration = time.Duration(150) * time.Millisecond
+	}
+	return duration
+}
+
+// get position returns a human-readable string that represents a node's position
+func (rf *Raft) getPosition() string {
+	switch rf.position {
+	case 1:
+		return "follower"
+	case 2:
+		return "candidate"
+	case 3:
+		return "leader"
+	default:
+		return "invalid pos"
+	}
 }
