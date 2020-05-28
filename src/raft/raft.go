@@ -17,7 +17,7 @@ package raft
 //
 
 import (
-	"fmt"
+	//"fmt"
 	"labrpc"
 	"math/rand"
 	"sync"
@@ -74,7 +74,16 @@ type Raft struct {
 	nextIndex  []int
 	matchIndex []int
 
+	id 			string
+
 	// JASON'S CODE END
+
+	//chris
+	isdead 		bool
+	election    bool
+	votes       int
+	sendbeat 	bool
+	killTimer	*time.Timer
 }
 
 //
@@ -86,8 +95,11 @@ func (rf *Raft) GetState() (int, bool) {
 	var isleader bool
 
 	// JASON'S CODE START
+	rf.mu.Lock()
 	term = rf.currentTerm
-	if rf.position == 3 {
+	positioncopy := rf.position
+	rf.mu.Unlock()
+	if positioncopy == 3 {
 		isleader = true
 	} else {
 		isleader = false
@@ -172,22 +184,40 @@ type LogEntry struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// fmt.Print(args.CandidateID)
 	// reply with current term
+
+	//MUtex??
+	rf.mu.Lock()
 	reply.Term = rf.currentTerm
+	//votedForCopy := rf.votedFor
+	length := len(rf.log)-1
+	rf.mu.Unlock()
+	
 
 	// decide if will grant vote
 	// Reply false if term < currentTerm
 	// if votedFor is null or candidateId, and candidate’s log is atleast as up-to-date as receiver’s log, grant vote
 	if !rf.ownTermSmallerThan(args.Term) {
 		reply.VoteGranted = false
-		fmt.Printf("\nNode %d denied vote for candidate %d", rf.me, args.CandidateID)
-	} else if (rf.votedFor == -1 || rf.votedFor == args.CandidateID) && (args.LastLogIndex >= len(rf.log)-1) {
-		fmt.Printf("\nNode %d voted for candidate %d", rf.me, args.CandidateID)
+		DPrintf("\nNode %d denied vote for candidate %d, id = %s", rf.me, args.CandidateID, rf.id)
+	} else if (rf.votedFor == -1 || rf.votedFor == args.CandidateID) && (args.LastLogIndex >= length) {
+		DPrintf("\nNode %d voted for candidate %d, id = %s", rf.me, args.CandidateID, rf.id)
+		//rf.electionTimeoutTimer.Stop()
+		//rf.electionTimeoutTimer.Reset(rf.getDuration("election"))
+		
+		rf.mu.Lock()
+		
 		rf.votedFor = args.CandidateID
+		rf.mu.Unlock()
 		reply.VoteGranted = true
 	} else {
+		DPrintf("%t", (rf.votedFor == -1))
+		DPrintf("%t", (rf.votedFor == args.CandidateID))
+		DPrintf("%t", (args.LastLogIndex >= len(rf.log)-1))
+		DPrintf("vote not granted\n")
 		reply.VoteGranted = false
-		fmt.Printf("\nNode %d denied vote for candidate %d", rf.me, args.CandidateID)
 	}
+
+	
 
 }
 
@@ -260,18 +290,28 @@ type AppendEntriesReply struct {
 // IMPL: JASON
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	// reply with current term
-	reply.Term = rf.currentTerm
+	
 
-	if rf.currentTerm > args.Term {
-		fmt.Printf("\nNode %d rejects leader %d, %d > %d", rf.me, args.LeaderID, rf.currentTerm, args.Term)
+
+	// if follower/candidate, reset election timeout
+	rf.mu.Lock()
+	DPrintf("Node %d in AppendEntries, id = %s", rf.me, rf.id)
+	reply.Term = rf.currentTerm
+	if rf.position == 1 || rf.position == 2 {
+		rf.electionTimeoutTimer.Stop()
+		rf.electionTimeoutTimer.Reset(time.Duration((200 + rand.Intn(100))) * time.Millisecond)
+		rf.heartbeatTimer.Stop()
+		rf.position = 1
+		rf.election = false
+	}
+	rf.mu.Unlock()
+
+
+	if reply.Term > args.Term {
+		DPrintf("\nNode %d rejects leader %d, %d > %d", rf.me, args.LeaderID, rf.currentTerm, args.Term)
 		reply.Success = false
 	} else {
 		reply.Success = true
-	}
-
-	// if follower/candidate, reset election timeout
-	if rf.position <= 2 {
-		rf.electionTimeoutTimer.Reset(rf.getDuration("election"))
 	}
 
 }
@@ -320,6 +360,13 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 //
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
+	// killing this process
+	
+	rf.mu.Lock()
+	rf.position = 4
+	rf.killTimer.Reset(time.Duration(1) * time.Millisecond)
+	rf.mu.Unlock()
+	
 }
 
 //
@@ -333,12 +380,173 @@ func (rf *Raft) Kill() {
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
 //
+
+// If other term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
+func (rf *Raft) ownTermSmallerThan(other int) bool {
+
+	//maybe concurrency issue here
+	var copycurrent int
+	rf.mu.Lock()
+	copycurrent = rf.currentTerm
+	rf.mu.Unlock()
+	if other > copycurrent {
+		DPrintf("\nNode %d made follower, %d > %d, id = %s", rf.me, other, rf.currentTerm, rf.id)
+		if !rf.electionTimeoutTimer.Stop(){
+			<-rf.electionTimeoutTimer.C
+			DPrintf("Draining channel?\n")
+		}
+		rf.electionTimeoutTimer.Reset(time.Duration((200 + rand.Intn(100))) * time.Millisecond)
+		rf.heartbeatTimer.Stop()
+		rf.mu.Lock()
+		rf.votedFor = -1
+		rf.position = 1
+		
+		rf.election = false
+		rf.currentTerm = other
+		rf.mu.Unlock()
+		return true
+	}
+	
+	return false
+}
+
+func (rf *Raft) AllServer(){
+	//If commitIndex > lastApplied: increment lastApplied, apply
+	//log[lastApplied] to state machine
+
+	//If RPC request or response contains term T > currentTerm:
+	//set currentTerm = T, convert to follower
+	time.Sleep(10 * time.Millisecond)
+	return
+}
+
+
+func (rf *Raft) Follower(){
+	//respond to RPCs from candidates and leaders
+	//become a candidate if there was a timeout
+	//timeout resets when follower votes or when it recieves a heartbeat
+	rf.AllServer()
+	//give time to process RPCs
+	time.Sleep(10 * time.Millisecond)
+	return
+}
+
+func (rf *Raft) Candidate(){
+	//starts election
+	//votes for self
+	//sends voterequests
+	//become leader if you get majority
+	//start new election if timeout
+	DPrintf("Node %d, Candidate Lock, id = %s", rf.me, rf.id)
+	rf.mu.Lock()
+	if !rf.election {
+		rf.currentTerm++
+		rf.votedFor = rf.me
+		rf.votes = 1
+		rf.election = true
+		rf.electionTimeoutTimer.Stop()
+		rf.electionTimeoutTimer.Reset((time.Duration(200 + rand.Intn(100)) * time.Millisecond))
+		DPrintf("\nNode %d is starting an election, id = %s", rf.me, rf.id)
+	}
+	// Create RequestVoteArgs
+	args := RequestVoteArgs{Term: rf.currentTerm, CandidateID: rf.me}
+	if len(rf.log) > 0 {
+		args.LastLogIndex = len(rf.log) - 1
+		args.LastLogTerm = rf.log[args.LastLogIndex]
+	}
+	args.Term = rf.currentTerm
+	rf.mu.Unlock()
+
+	votes := 1
+
+	DPrintf("Node %d is sending votes to peers, id = %s", rf.me, rf.id)
+	var reply RequestVoteReply
+	for i := 0; i < len(rf.peers); i++ {
+		if i == rf.me {
+			continue				
+		}
+								
+		ok := rf.sendRequestVote(i, &args, &reply)
+					
+		//time.Sleep(1 * time.Millisecond)
+
+		if ok {
+			DPrintf("Node %d got the vote, id = %s", rf.me, rf.id)
+			votes++
+		} else {
+			DPrintf("Node %d didn't get the vote, id = %s", rf.me, rf.id)
+		}
+	}
+				
+				
+	// If votes received from majority of servers: become leader
+	if votes > len(rf.peers)/2 {
+		DPrintf("Node %d, Win Election Lock, id = %s", rf.me, rf.id)
+		rf.mu.Lock()
+		DPrintf("\nNode %d has won the election, id = %s", rf.me, rf.id)
+		rf.position = 3
+		rf.heartbeatTimer.Stop()
+		rf.heartbeatTimer.Reset(100 * time.Millisecond)
+		rf.electionTimeoutTimer.Stop()
+		rf.election = false
+		rf.sendbeat = true
+		rf.mu.Unlock()
+	} 
+	
+	
+
+
+
+	rf.AllServer()
+	return
+
+}
+
+func (rf *Raft) Leader(){
+	//send heartbeats
+	DPrintf("Node %d, Leader Lock, id = %s", rf.me, rf.id)
+	rf.mu.Lock()
+	if rf.sendbeat {
+		rf.sendbeat = false
+		rf.mu.Unlock()
+		// Create AppendEntriesArgs
+		args := AppendEntriesArgs{Term: rf.currentTerm, LeaderID: rf.me}
+
+		// Send AppendEntries RPCs to all other servers
+		var reply AppendEntriesReply
+				
+		for i := 0; i < len(rf.peers); i++ {
+			if i == rf.me {
+				continue
+			}
+
+			rf.sendAppendEntries(i, &args, &reply)
+		}
+		rf.heartbeatTimer.Stop()
+		rf.heartbeatTimer.Reset(100 * time.Millisecond)
+		
+	} else {
+		rf.mu.Unlock()
+	}
+	
+	//handle log stuff
+	rf.AllServer()
+	return
+}
+
+
+
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	//chris
+	rf.isdead = false
+	rf.id = randstring(20)
+	rf.election = false
+	rf.sendbeat = false
 
 	// JASON'S CODE START
 
@@ -358,26 +566,96 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex = []int{}
 	rf.matchIndex = []int{}
 
-	fmt.Printf("\nNode %d initialized", rf.me)
+	DPrintf("\nNode %d initialized", rf.me)
 
 	// start election timeout timer
-	rf.electionTimeoutTimer = time.NewTimer(rf.getDuration("election"))
+	rf.electionTimeoutTimer = time.NewTimer(time.Duration((200 + rand.Intn(100))) * time.Millisecond)
 
 	// init heartbeat timer, but dont fire
-	rf.heartbeatTimer = time.NewTimer(rf.getDuration("heartbeat"))
+	rf.heartbeatTimer = time.NewTimer(time.Duration(100) * time.Millisecond)
+	rf.heartbeatTimer.Stop()
+
+	rf.killTimer = time.NewTimer(time.Duration(1000) * time.Millisecond)
+	rf.killTimer.Stop()
+
+	go func() {
+		for {
+			//DPrintf("Node %d, Clock Lock, id = %s", rf.me, rf.id)
+			rf.mu.Lock()
+			switch rf.position {
+			case 1:
+				rf.mu.Unlock()
+				//follower
+				rf.Follower()
+			case 2:
+				rf.mu.Unlock()
+				//candidate
+				rf.Candidate()
+			case 3:
+				rf.mu.Unlock()
+				//leader
+				rf.Leader()
+			default:
+				DPrintf("Node %d is killing state machine, id = %s", rf.me, rf.id)
+				rf.mu.Lock()
+			}
+			//time.sleep(100)
+		}
+	}()
 
 	go func() {
 		for {
 			select {
+			case <-rf.electionTimeoutTimer.C:
+				DPrintf("Node %d election timer timeout, id = %s", rf.me, rf.id)
+				
+				rf.mu.Lock()
+				rf.position = 2
+				rf.election = false
+				rf.mu.Unlock()
+				
+			case <-rf.heartbeatTimer.C:
+				DPrintf("Node %d heartbeat timer timeout, id = %s", rf.me, rf.id)
+				//send hearbeat
+				rf.mu.Lock()
+				rf.sendbeat = true
+				rf.mu.Unlock()
+			case <-rf.killTimer.C:
+				DPrintf("Node %d is killing timer gofunc, id = %s", rf.me, rf.id)
+				rf.mu.Lock()
+				rf.mu.Lock()
+			}
+		}
+
+		/*
+		for {
+			if rf.isdead {
+				DPrintf("killing Node %d, id = %s\n",rf.me, rf.id)
+				//deadlocking to kill the node(fixes output for debugging)
+				rf.mu.Lock()
+				rf.mu.Lock()
+			}
+			select {
+
+			
+				
 
 			// code below is run whenever election timeout elapses
 			case <-rf.electionTimeoutTimer.C:
-				fmt.Printf("\nNode %d of position %d election timeout. Starting election", rf.me, rf.position)
-
+				
+				
+				if rf.isdead {
+					//deadlocking to kill the node(fixes output for debugging)
+					DPrintf("killing Node %d, id = %s\n",rf.me, rf.id)
+					rf.mu.Lock()
+					rf.mu.Lock()
+				}
+				DPrintf("\nNode %d of position %d election timeout. Starting election, id = %s\n", rf.me, rf.position, rf.id)
 				// ignore election if already leader
 				if rf.position == 3 {
-					fmt.Printf("\nNode %d is already leader\n", rf.me)
+					DPrintf("\nNode %d is already leader, id = %s\n", rf.me, rf.id)
 					rf.electionTimeoutTimer.Stop()
+					
 					continue
 				} else {
 					// if follower/candidate, become candidate
@@ -392,7 +670,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				// }
 
 				// START ELECTION
-				fmt.Printf("\nCandidate %d is starting election", rf.me)
+				DPrintf("\nCandidate %d is starting election, id = %s", rf.me, rf.id)
 
 				// Increment current term
 				rf.currentTerm++
@@ -405,51 +683,74 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				}
 
 				// Vote for self
-				fmt.Printf("\nCandidate %d votes for itself", rf.me)
+				DPrintf("\nCandidate %d votes for itself, id = %s", rf.me, rf.id)
 				rf.votedFor = rf.me
 				votes := 1
 
 				// Reset election timer
+				rf.electionTimeoutTimer.Stop()
 				rf.electionTimeoutTimer.Reset(rf.getDuration("election"))
+
+				DPrintf("here\n")
 
 				// Send RequestVote RPCs to all other servers
 				var reply RequestVoteReply
+				DPrintf("before lock\n")
+				rf.mu.Lock()
+				DPrintf("after lock\n")
 				for i := 0; i < len(peers); i++ {
 					if i == rf.me {
+						DPrintf("hello \n")
 						continue
+						
 					}
-
+					DPrintf("blah\n")
+					
 					ok := rf.sendRequestVote(i, &args, &reply)
+					
+					DPrintf("damn\n")
+
 					if ok {
 						votes++
+					} else {
+						DPrintf("Node %d did not recieve vote, id = %s\n",rf.me, rf.id)
 					}
 				}
-
+				rf.mu.Unlock()
+				DPrintf("sondfsndfs\n")
 				// If votes received from majority of servers: become leader
 				if votes > len(peers)/2 {
-					fmt.Printf("\nNode %d elected leader", rf.me)
+					DPrintf("\nNode %d elected leader, id = %s", rf.me, rf.id)
 					rf.position = 3
 					rf.heartbeatTimer.Reset(0)
 					rf.electionTimeoutTimer.Stop()
 				} else {
-					fmt.Printf("\nNode %d failed to be elected", rf.me)
+					DPrintf("\nNode %d failed to be elected, id = %s", rf.me, rf.id)
+					rf.electionTimeoutTimer.Stop()
 					rf.electionTimeoutTimer.Reset(rf.getDuration("election"))
 				}
+				
 
 			// code below is only run by leader
 			case <-rf.heartbeatTimer.C:
-
+				if rf.isdead {
+					//deadlocking to kill the node(fixes output for debugging)
+					DPrintf("killing Node %d, id = %s\n",rf.me, rf.id)
+					rf.mu.Lock()
+					rf.mu.Lock()
+				}
 				// if not leader, continue
 				if rf.position != 3 {
 					continue
 				}
-				fmt.Printf("\nNode %d sends heartbeat", rf.me)
+				DPrintf("\nNode %d sends heartbeat, id = %s", rf.me, rf.id)
 
 				// Create AppendEntriesArgs
 				args := AppendEntriesArgs{Term: rf.currentTerm, LeaderID: rf.me}
 
 				// Send AppendEntries RPCs to all other servers
 				var reply AppendEntriesReply
+				rf.mu.Lock()
 				for i := 0; i < len(peers); i++ {
 					if i == rf.me {
 						continue
@@ -457,10 +758,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 					rf.sendAppendEntries(i, &args, &reply)
 				}
+				rf.mu.Unlock()
+				rf.heartbeatTimer.Stop()
 				rf.heartbeatTimer.Reset(rf.getDuration("heartbeat"))
 
 			}
 		}
+		*/
 	}()
 
 	// JASON'S CODE END
@@ -476,35 +780,20 @@ func (rf *Raft) getDuration(timerType string) time.Duration {
 	switch timerType {
 	// 200ms + random(600ms)
 	case "election":
-		t = 160
-		r = 200
+		t = 500
+		r = 300
 	// 150ms
 	case "heartbeat":
-		t = 120
-		r = 0
+		t = 100
+		r = 1
 	}
 
 	duration := time.Duration(t) * time.Millisecond
 	var randomDuration time.Duration
-	if r > 0 {
+	//if r > 0 {
 		randomDuration = time.Duration(rand.Intn(r)) * time.Millisecond
-	}
+	//}
 
 	return duration + randomDuration
 }
 
-// If other term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
-func (rf *Raft) ownTermSmallerThan(other int) bool {
-	rf.mu.Lock()
-	if other > rf.currentTerm {
-		fmt.Printf("\nNode %d made follower, %d > %d", rf.me, other, rf.currentTerm)
-		rf.heartbeatTimer.Stop()
-		rf.currentTerm = other
-		rf.position = 1
-		rf.votedFor = -1
-		rf.mu.Unlock()
-		return true
-	}
-	rf.mu.Unlock()
-	return false
-}
