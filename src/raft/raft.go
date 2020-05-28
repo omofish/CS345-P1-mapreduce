@@ -17,7 +17,6 @@ package raft
 //
 
 import (
-	"fmt"
 	"labrpc"
 	"math/rand"
 	"sync"
@@ -178,18 +177,18 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// become follower if own term outdated
 	if args.Term > rf.currentTerm {
 		rf.becomeFollower(args.Term)
-		fmt.Printf("\n%s %d term %d < candidate term %d", rf.getPosition(), rf.me, rf.currentTerm, args.Term)
+		// fmt.Printf("\n%s %d term %d < candidate term %d", rf.getPosition(), rf.me, rf.currentTerm, args.Term)
 	}
 
 	// if terms match and has not voted/already voted for candidate, grant vote. else dont.
 	if args.Term == rf.currentTerm &&
 		(rf.votedFor == -1 || rf.votedFor == args.CandidateID) {
-		fmt.Printf("\n%s %d voted for candidate %d", rf.getPosition(), rf.me, args.CandidateID)
+		// fmt.Printf("\n%s %d voted for candidate %d", rf.getPosition(), rf.me, args.CandidateID)
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateID
 		rf.electionReset = time.Now()
 	} else {
-		fmt.Printf("\n%s %d denied vote to candidate %d", rf.getPosition(), rf.me, args.CandidateID)
+		// fmt.Printf("\n%s %d denied vote to candidate %d", rf.getPosition(), rf.me, args.CandidateID)
 		reply.VoteGranted = false
 	}
 
@@ -258,18 +257,18 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	fmt.Printf("\n%s %d received heartbeat from leader %d", rf.getPosition(), rf.me, args.LeaderID)
+	// fmt.Printf("\n%s %d received heartbeat from leader %d", rf.getPosition(), rf.me, args.LeaderID)
 
 	// become follower if own term outdated
 	if args.Term > rf.currentTerm {
 		rf.becomeFollower(args.Term)
-		fmt.Printf("\n%s %d term %d < node term %d", rf.getPosition(), rf.me, rf.currentTerm, args.Term)
+		// fmt.Printf("\n%s %d term %d < node term %d", rf.getPosition(), rf.me, rf.currentTerm, args.Term)
 		reply.Success = false
 	}
 
 	if args.Term == rf.currentTerm {
 		// if not already a follower, become follower
-		fmt.Printf("\n%s %d acknowledges authority of leader %d", rf.getPosition(), rf.me, args.LeaderID)
+		// fmt.Printf("\n%s %d acknowledges authority of leader %d", rf.getPosition(), rf.me, args.LeaderID)
 		if rf.position != 1 {
 			rf.becomeFollower(args.Term)
 		}
@@ -343,8 +342,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persister = persister
 	rf.me = me
 
-	// JASON'S CODE START
-
 	rf.applyCh = applyCh
 
 	// persistent states
@@ -362,14 +359,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex = []int{}
 	rf.matchIndex = []int{}
 
-	fmt.Printf("\n\nNode %d initialized", rf.me)
+	// fmt.Printf("\n\nNode %d initialized", rf.me)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	go rf.startElectionTimer()
 
-	// JASON'S CODE END
 	return rf
 }
 
@@ -389,21 +385,21 @@ func (rf *Raft) startElectionTimer() {
 		rf.mu.Lock()
 		// exit if leader
 		if rf.position == 3 {
-			fmt.Printf("\nwhile %s %d, term %d in election timer, stopping", rf.getPosition(), rf.me, currentTerm)
+			// fmt.Printf("\nwhile %s %d, term %d in election timer, stopping", rf.getPosition(), rf.me, currentTerm)
 			rf.mu.Unlock()
 			return
 		}
 
 		// exit if terms mismatch (for concurrency)
 		if currentTerm != rf.currentTerm {
-			fmt.Printf("\nwhile %s %d in election timer, terms mismatch %d != %d, stopping", rf.getPosition(), rf.me, currentTerm, rf.currentTerm)
+			// fmt.Printf("\nwhile %s %d in election timer, terms mismatch %d != %d, stopping", rf.getPosition(), rf.me, currentTerm, rf.currentTerm)
 			rf.mu.Unlock()
 			return
 		}
 
 		// run election after time has elapsed
 		if elapsed := time.Since(rf.electionReset); elapsed >= timeoutDuration {
-			fmt.Printf("\nwhile %s %d, term %d in election timer, stopping", rf.getPosition(), rf.me, currentTerm)
+			// fmt.Printf("\nwhile %s %d, term %d in election timer, stopping", rf.getPosition(), rf.me, currentTerm)
 			rf.startElection()
 			rf.mu.Unlock()
 			return
@@ -420,7 +416,7 @@ func (rf *Raft) startElection() {
 	currentTerm := rf.currentTerm
 	rf.electionReset = time.Now()
 	rf.votedFor = rf.me
-	fmt.Printf("\nnode %d becomes %s in term %d, starting election", rf.me, rf.getPosition(), currentTerm)
+	// fmt.Printf("\nnode %d becomes %s in term %d, starting election", rf.me, rf.getPosition(), currentTerm)
 
 	// vote for itself
 	var votesReceived int32
@@ -442,29 +438,28 @@ func (rf *Raft) startElection() {
 			}
 			var reply RequestVoteReply
 
-			fmt.Printf("\n%s %d requesting vote from node %d", rf.getPosition(), rf.me, nPeer)
+			// fmt.Printf("\n%s %d requesting vote from node %d", rf.getPosition(), rf.me, nPeer)
 			ok := rf.sendRequestVote(nPeer, &args, &reply)
 			if ok {
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
-				fmt.Printf("\nreceived RequestVoteReply %+v", reply)
 
 				// exit if candidate changes state midway
 				if rf.position != 2 {
-					fmt.Printf("\nwhile %s %d waiting for vote to return, lost candidacy", rf.getPosition(), rf.me)
+					// fmt.Printf("\nwhile %s %d waiting for vote to return, lost candidacy", rf.getPosition(), rf.me)
 					return
 				}
 
 				// exit if terms mismatch (for concurrency)
 				if currentTerm != rf.currentTerm {
-					fmt.Printf("\nwhile %s %d requesting votes, terms mismatch %d != %d, stopping", rf.getPosition(), rf.me, currentTerm, rf.currentTerm)
+					// fmt.Printf("\nwhile %s %d requesting votes, terms mismatch %d != %d, stopping", rf.getPosition(), rf.me, currentTerm, rf.currentTerm)
 					return
 				}
 
 				if reply.VoteGranted {
 					votes := int(atomic.AddInt32(&votesReceived, 1))
 					if votes*2 > len(rf.peers) {
-						fmt.Printf("\n%s %d won election", rf.getPosition(), rf.me)
+						// fmt.Printf("\n%s %d won election", rf.getPosition(), rf.me)
 						rf.becomeLeader()
 						return
 					}
@@ -500,23 +495,22 @@ func (rf *Raft) sendHeartbeats() {
 			}
 			var reply AppendEntriesReply
 
-			fmt.Printf("\n%s %d sending heartbeat to node %d", rf.getPosition(), rf.me, nPeer)
+			// fmt.Printf("\n%s %d sending heartbeat to node %d", rf.getPosition(), rf.me, nPeer)
 			ok := rf.sendAppendEntries(nPeer, &args, &reply)
 			if ok {
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
-				fmt.Printf("\nreceived AppendEntriesReply %+v", reply)
 
 				// become follower if out of date
 				if reply.Term > currentTerm {
-					fmt.Printf("\nnode %d term > %s %d's current term %d", nPeer, rf.getPosition(), rf.me, currentTerm)
+					// fmt.Printf("\nnode %d term > %s %d's current term %d", nPeer, rf.getPosition(), rf.me, currentTerm)
 					rf.becomeFollower(reply.Term)
 					return
 				}
 
 				// exit if terms mismatch (for concurrency)
 				if currentTerm != rf.currentTerm {
-					fmt.Printf("\nwhile %s %d sending heartbeat, terms mismatch %d != %d, stopping", rf.getPosition(), rf.me, currentTerm, rf.currentTerm)
+					// fmt.Printf("\nwhile %s %d sending heartbeat, terms mismatch %d != %d, stopping", rf.getPosition(), rf.me, currentTerm, rf.currentTerm)
 					return
 				}
 
@@ -531,18 +525,20 @@ func (rf *Raft) sendHeartbeats() {
 // becomeLeader changes a node into a leader and starts a ticker to make it send out heartbeats
 func (rf *Raft) becomeLeader() {
 	rf.position = 3
-	fmt.Printf("\n%s %d becomes leader", rf.getPosition(), rf.me)
+	// fmt.Printf("\n%s %d becomes leader", rf.getPosition(), rf.me)
 
 	go func() {
-		ticker := time.NewTicker(rf.getDuration("heartbeat"))
-		defer ticker.Stop()
+		heartbeatTicker := time.NewTicker(rf.getDuration("heartbeat"))
+		defer heartbeatTicker.Stop()
 
 		// send heartbeats while leader
 		rf.sendHeartbeats()
 
-		<-ticker.C
+		// blocks until receiving from ticker
+		<-heartbeatTicker.C
 
 		rf.mu.Lock()
+		// if no longer leader, stop function
 		if rf.position != 3 {
 			rf.mu.Unlock()
 			return
@@ -552,9 +548,9 @@ func (rf *Raft) becomeLeader() {
 
 }
 
-// becomeFollower changes a node into a follower, resets its vote and starts its electionTimer
+// becomeFollower changes a node into a follower, updates its term, resets its vote and starts its electionTimer
 func (rf *Raft) becomeFollower(term int) {
-	fmt.Printf("\n%s %d becomes follower", rf.getPosition(), rf.me)
+	// fmt.Printf("\n%s %d becomes follower", rf.getPosition(), rf.me)
 	rf.position = 1
 	rf.currentTerm = term
 	rf.votedFor = -1
