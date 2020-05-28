@@ -22,6 +22,7 @@ import (
 	"math/rand"
 	"sync"
 	"time"
+	"sync/atomic"
 )
 
 // import "bytes"
@@ -59,20 +60,20 @@ type Raft struct {
 
 	// persistent states (might need to be saved in persister instead)
 	// 1 - follower, 2 - candidate, 3 - leader NOTE this wasnt in the paper but they didn't really specify how else to indicate leadership for peers
-	position    int
-	currentTerm int
-	votedFor    int
+	position    int64
+	currentTerm int64
+	votedFor    int64
 	log         []*LogEntry
 
 	// volatile states
-	commitIndex          int
-	lastApplied          int
+	commitIndex          int64
+	lastApplied          int64
 	electionTimeoutTimer *time.Timer
 	heartbeatTimer       *time.Timer
 
 	// leader volatile states
-	nextIndex  []int
-	matchIndex []int
+	nextIndex  []int64
+	matchIndex []int64
 
 	id 			string
 
@@ -84,7 +85,69 @@ type Raft struct {
 	votes       int
 	sendbeat 	bool
 	killTimer	*time.Timer
+	leader 		int64
+	lastVoteTerm int64
+
+
 }
+
+//chris's concurrency safe state functions
+
+func (rf *Raft) SetTerm(term int64){
+	atomic.StoreInt64(&rf.currentTerm, term)
+}
+
+func (rf *Raft) GetTerm() int64{
+	return atomic.LoadInt64(rf.currentTerm)
+}
+
+func (rf *Raft) GetPosition() int64{
+	return atomic.LoadInt64(&rf.position)
+}
+
+func (rf *Raft) SetPosition(newpos int64){
+	atomic.StoreInt64(&rf.position, newpos)
+}
+
+func (rf *Raft) GetLastApplied() int64{
+	return atomic.LoadInt64(&rf.lastApplied)
+}
+
+func (rf *Raft) SetLastApplied(newLast int64){
+	atomic.StoreInt64(&rf.lastApplied, newLast)
+}
+
+func (rf *Raft) GetCommitIndex() int64{
+	return atomic.LoadInt64(&rf.commitIndex)
+}
+
+func (rf *Raft) SetCommitIndex(newIndex int64){
+	atomic.StoreInt64(&rf.commitIndex, newIndex)
+}
+
+func (rf *Raft) GetLeader() int64{
+	return atomic.LoadInt64(&rf.leader)
+}
+
+func (rf *Raft) SetLeader(newLeader int64){
+	atomic.StoreInt64(&rf.leader, newLeader)
+}
+
+func (rf *Raft) GetLastVoteTerm() int64{
+	return atomic.LoadInt64(&rf.lastVoteTerm)
+}
+
+func (rf *Raft) SetLastVoteTerm(newVoteTerm int64){
+	atomic.StoreInt64(&rf.lastVoteTerm, newVoteTerm)
+}
+
+func (rf *Raft) GetLogLength() int{
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return (len(rf.log) - 1)
+}
+
+
 
 //
 // return currentTerm and whether this server
@@ -94,20 +157,12 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 
-	// JASON'S CODE START
-	rf.mu.Lock()
-	term = rf.currentTerm
-	positioncopy := rf.position
-	rf.mu.Unlock()
-	if positioncopy == 3 {
-		isleader = true
-	} else {
-		isleader = false
-	}
-	// JASON'S CODE END
+	term = int(atomic.LoadInt64(&rf.currentTerm))
+	isleader = (int64(3) == atomic.LoadInt64(&rf.position))
 
 	return term, isleader
 }
+
 
 //
 // save Raft's persistent state to stable storage,
@@ -185,6 +240,40 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// fmt.Print(args.CandidateID)
 	// reply with current term
 
+	// if we already have a leader, dont vote
+	if leader := rf.GetLeader(); leader != int64(-1) && leader != int64(args.CandidateID){
+		reply.VoteGranted = false
+		return
+	}
+
+	// if the term is old, dont vote
+	term, state := rf.GetState()
+	if args.Term < term {
+		reply.VoteGranted = false
+		return
+	}
+
+	// if we already voted, dont vote
+	if int64(args.Term) == rf.GetLastVoteTerm(){
+		reply.VoteGranted = false
+		return
+	}
+
+	// check log length
+	if args.LastLogIndex >= rf.GetLogLength(){
+		reply.VoteGranted = false
+		return
+	}
+
+	//vote for candidate
+	rf.SetLeader(int64(args.CandidateID))
+	rf.SetTerm(int64(args.Term))
+	rf.SetLastVoteTerm(int64(args.Term))
+
+	reply.VoteGranted = true
+
+	/*
+
 	//MUtex??
 	rf.mu.Lock()
 	reply.Term = rf.currentTerm
@@ -217,7 +306,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = false
 	}
 
-	
+	*/
 
 }
 
@@ -251,6 +340,17 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // the struct itself.
 // IMPL: JASON
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+
+	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+
+	if ok {
+		//vote recieved channel
+		return true
+	} else {
+		return false
+	}
+
+	/*
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	var vote bool
 	if ok {
@@ -262,6 +362,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 		vote = false
 	}
 	return vote
+	*/
 }
 
 //
@@ -294,6 +395,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 
 	// if follower/candidate, reset election timeout
+	/*
 	rf.mu.Lock()
 	DPrintf("Node %d in AppendEntries, id = %s", rf.me, rf.id)
 	reply.Term = rf.currentTerm
@@ -313,6 +415,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	} else {
 		reply.Success = true
 	}
+	*/
 
 }
 
@@ -362,10 +465,7 @@ func (rf *Raft) Kill() {
 	// Your code here, if desired.
 	// killing this process
 	
-	rf.mu.Lock()
-	rf.position = 4
-	rf.killTimer.Reset(time.Duration(1) * time.Millisecond)
-	rf.mu.Unlock()
+	
 	
 }
 
