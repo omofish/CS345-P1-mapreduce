@@ -167,6 +167,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	lastLogIndex := -1
+	lastLogTerm := -1
+	if len(rf.log) > 0 {
+		lastLogIndex = len(rf.log) - 1
+		lastLogTerm = rf.log[lastLogIndex].TermLeaderReceived
+	}
+
 	// become follower if own term outdated
 	if args.Term > rf.currentTerm {
 		rf.becomeFollower(args.Term)
@@ -174,8 +181,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	// if terms match and has not voted/already voted for candidate, grant vote. else dont.
-	if args.Term == rf.currentTerm &&
-		(rf.votedFor == -1 || rf.votedFor == args.CandidateID) {
+	if args.Term == rf.currentTerm && (rf.votedFor == -1 || rf.votedFor == args.CandidateID) && (args.LastLogTerm > lastLogTerm || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex)) {
 		// fmt.Printf("\n%s %d voted for candidate %d", rf.getPosition(), rf.me, args.CandidateID)
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateID
@@ -260,7 +266,33 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// fmt.Printf("\n%s %d received heartbeat from %d. resetting election timeout previously at ", rf.getPosition(), rf.me, args.LeaderID)
 		// fmt.Print(time.Since(rf.lastElectionTime))
 		rf.lastElectionTime = time.Now()
-		reply.Success = true
+
+		if args.PrevLogIndex == -1 || (args.PrevLogIndex < len(rf.log) && args.PrevLogTerm == rf.log[args.PrevLogIndex].Term) {
+			reply.Success = true
+
+			logInsertIndex := args.PrevLogIndex + 1
+			newEntriesIndex := 0
+
+			for {
+				if logInsertIndex >= len(rf.log) || newEntriesIndex >= len(args.Entries) {
+					break
+				}
+				if rf.log[logInsertIndex].Term != args.Entries[newEntriesIndex].Term {
+					break
+				}
+				logInsertIndex++
+				newEntriesIndex++
+			}
+
+			if newEntriesIndex < len(args.Entries) {
+				rf.log = append(rf.log[:logInsertIndex], args.Entries[newEntriesIndex:])
+			}
+
+			if args.LeaderCommit > rf.commitIndex {
+				rf.commitIndex = intMin(args.LeaderCommit, len(rf.log) - 1)
+				rf.applyCh <- struct{}{}
+			}
+		}
 	}
 
 	reply.Term = rf.currentTerm
@@ -297,6 +329,23 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (4).
+	// Danny's code.
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	index = rf.commitIndex + 1
+	term = rf.currentTerm
+	
+	if rf.position == 3 {
+		logEntry := LogEntry{
+			Command: command, TermLeaderReceived: rf.currentTerm
+		}
+		rf.log = append(rf.log, logEntry)
+		isLeader = true
+	}
+	else {
+		isLeader = false
+	}
 
 	return index, term, isLeader
 }
@@ -423,11 +472,21 @@ func (rf *Raft) startElection() {
 		}
 
 		go func(nPeer int) {
+			rf.mu.Lock()
+			lastLogIndex := -1
+			lastLogTerm := -1
+			if len(rf.log) > 0 {
+				lastLogIndex = len(rf.log) - 1
+				lastLogTerm = rf.log[lastLogIndex].TermLeaderReceived
+			}
+			rf.mu.Unlock()
 
 			// set args and reply
 			args := RequestVoteArgs{
 				Term:        currentTerm,
 				CandidateID: rf.me,
+				LastLogIndex: lastLogIndex,
+				LastLogTerm: lastLogTerm
 			}
 			var reply RequestVoteReply
 
@@ -473,6 +532,7 @@ func (rf *Raft) sendHeartbeats() {
 	// save current term
 	currentTerm := rf.currentTerm
 	rf.mu.Unlock()
+
 	for nPeer := 0; nPeer < len(rf.peers); nPeer++ {
 		// do note send heartbeat to self
 		if nPeer == rf.me {
@@ -480,12 +540,26 @@ func (rf *Raft) sendHeartbeats() {
 		}
 
 		go func(nPeer int) {
+			rf.mu.Lock()
+			nextIndex := rf.nextIndex[nPeer]
 
 			// set args and reply
+			prevLogIndex := nextIndex - 1
+			prevLogTerm := -1
+			if prevLogIndex >= 0 {
+				prevLogTerm = rf.log[prevLogIndex].TermLeaderReceived
+			}
+			entries := nf.log[nextIndex:]
+			
 			args := AppendEntriesArgs{
 				Term:     currentTerm,
 				LeaderID: rf.me,
+				PrevLogIndex: prevLogIndex,
+				PrevLogTerm: prevLogTerm,
+				Entries: entries,
+				LeaderCommit: rf.commitIndex
 			}
+			rf.mu.Unlock()
 			var reply AppendEntriesReply
 
 			// fmt.Printf("\n%s %d sending heartbeat to node %d", rf.getPosition(), rf.me, nPeer)
@@ -507,6 +581,37 @@ func (rf *Raft) sendHeartbeats() {
 					return
 				}
 
+				if rf.position == 3 && currentTerm == reply.TermLeaderReceived {
+					if reply.Success {
+						rf.matchIndex[nPeer] = rf.nextIndex[nPeer] - 1
+						rf.nextIndex[nPeer] = nextIndex + len(entries)
+						fmt.Printf("\nAppendEntries reply from %d success: nextIndex := %v, matchIndex := %v", peerId, cm.nextIndex, cm.matchIndex)
+
+						tempCommitIndex := rf.commitIndex
+						for i := rf.commitIndex + 1; i < len(rf.log); i++ {
+							if rf.log[i].TermLeaderReceived == rf.currentTerm {
+								count := 1
+								for nPeer := 0; nPeer < len(rf.peers); nPeer++ {
+									if rf.matchIndex[nPeer] >= i {
+										count++
+									}
+								}
+
+								if 2 * count > len(rf.peers) + 1 {
+									rf.commitIndex = i
+								}
+							}
+						}
+						if rf.commitIndex != tempCommitIndex {
+							fmt.Printf("\nleader sets commitIndex := %d", rf.commitIndex)
+							rf.applyCh <- struct{}{}
+						}
+					}
+					else {
+						rf.nextIndex[nPeer] = nextIndex - 1
+						fmt.Printf("\nAppendEntries reply from %d !success: nextIndex := %d", peerId, ni - 1)
+					}
+				}
 			}
 		}(nPeer)
 
