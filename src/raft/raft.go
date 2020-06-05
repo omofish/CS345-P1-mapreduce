@@ -17,7 +17,6 @@ package raft
 //
 
 import (
-	"fmt"
 	"labrpc"
 	"math/rand"
 	"sync"
@@ -74,8 +73,10 @@ type Raft struct {
 	lastElectionTime time.Time
 
 	// leader volatile states
-	nextIndex  []int
-	matchIndex []int
+	//nextIndex  []int
+	//matchIndex []int
+	nextIndex  map[int]int
+	matchIndex map[int]int
 
 	// JASON'S CODE END
 }
@@ -259,9 +260,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term > rf.currentTerm {
 		rf.becomeFollower(args.Term)
 		// fmt.Printf("\n%s %d term updated to %d", rf.getPosition(), rf.me, args.Term)
-		reply.Success = false
+		//reply.Success = false
 	}
 
+	reply.Success = false
 	if args.Term == rf.currentTerm {
 		// if not already a follower, become follower
 		if rf.position != 1 {
@@ -340,14 +342,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	index = rf.commitIndex + 1
-	term = rf.currentTerm
-
 	if rf.position == 3 {
-		logEntry := LogEntry{
-			Command: command, TermLeaderReceived: rf.currentTerm,
-		}
 		rf.log = append(rf.log, &LogEntry{Command: command, TermLeaderReceived: rf.currentTerm})
+		index = rf.commitIndex + 1
+		term = rf.currentTerm
 		isLeader = true
 	} else {
 		isLeader = false
@@ -397,8 +395,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastApplied = 0
 
 	// leader volatile states
-	rf.nextIndex = []int{}
-	rf.matchIndex = []int{}
+	//rf.nextIndex = []int{}
+	//rf.matchIndex = []int{}
+	rf.nextIndex = make(map[int]int)
+	rf.matchIndex = make(map[int]int)
 
 	// fmt.Printf("\n\nNode %d initialized", rf.me)
 
@@ -550,6 +550,7 @@ func (rf *Raft) sendHeartbeats() {
 
 		go func(nPeer int) {
 			rf.mu.Lock()
+
 			nextIndex := rf.nextIndex[nPeer]
 
 			// set args and reply
@@ -585,39 +586,37 @@ func (rf *Raft) sendHeartbeats() {
 				}
 
 				// exit if terms mismatch (for concurrency)
-				if currentTerm != rf.currentTerm {
-					// fmt.Printf("\nwhile %s %d sending heartbeat, terms mismatch %d != %d, stopping", rf.getPosition(), rf.me, currentTerm, rf.currentTerm)
-					return
-				}
+				// if currentTerm != rf.currentTerm {
+				// 	// fmt.Printf("\nwhile %s %d sending heartbeat, terms mismatch %d != %d, stopping", rf.getPosition(), rf.me, currentTerm, rf.currentTerm)
+				// 	return
+				// }
 
 				if rf.position == 3 && currentTerm == reply.Term {
 					if reply.Success {
-						rf.matchIndex[nPeer] = rf.nextIndex[nPeer] - 1
 						rf.nextIndex[nPeer] = nextIndex + len(entries)
-						fmt.Printf("\nAppendEntries reply from %d success: nextIndex := %v, matchIndex := %v", nPeer, rf.nextIndex, rf.matchIndex)
+						rf.matchIndex[nPeer] = rf.nextIndex[nPeer] - 1
 
 						tempCommitIndex := rf.commitIndex
 						for i := rf.commitIndex + 1; i < len(rf.log); i++ {
 							if rf.log[i].TermLeaderReceived == rf.currentTerm {
 								count := 1
-								for nPeer := 0; nPeer < len(rf.peers); nPeer++ {
-									if rf.matchIndex[nPeer] >= i {
+								for nPeerTwo := 0; nPeer < len(rf.peers); nPeerTwo++ {
+									if rf.matchIndex[nPeerTwo] >= i {
 										count++
 									}
 								}
-
 								if 2*count > len(rf.peers)+1 {
 									rf.commitIndex = i
 								}
 							}
 						}
 						if rf.commitIndex != tempCommitIndex {
-							fmt.Printf("\nleader sets commitIndex := %d", rf.commitIndex)
+							//fmt.Printf("\nleader sets commitIndex := %d", rf.commitIndex)
 							rf.newCommits <- struct{}{}
 						}
 					} else {
 						rf.nextIndex[nPeer] = nextIndex - 1
-						fmt.Printf("\nAppendEntries reply from %d !success: nextIndex := %d", nPeer, nextIndex-1)
+						//fmt.Printf("\nAppendEntries reply from %d !success: nextIndex := %d", nPeer, nextIndex-1)
 					}
 				}
 			}
@@ -625,8 +624,6 @@ func (rf *Raft) sendHeartbeats() {
 
 	}
 }
-
-// BECOMES
 
 // becomeLeader changes a node into a leader and starts a ticker to make it send out heartbeats
 func (rf *Raft) becomeLeader() {
@@ -702,19 +699,18 @@ func (rf *Raft) getPosition() string {
 func (rf *Raft) applyMsgHelper() {
 	for range rf.newCommits {
 		rf.mu.Lock()
-		tempTerm := rf.currentTerm
 		tempLastApplied := rf.lastApplied
-		var entries []LogEntry
+		var entries []*LogEntry
 		if rf.commitIndex > rf.lastApplied {
 			entries = rf.log[rf.lastApplied+1 : rf.commitIndex+1]
 			rf.lastApplied = rf.commitIndex
 		}
 		rf.mu.Unlock()
 
-		for i, entry := entries {
-			rf.applyCh<-ApplyMsg{
+		for i, entry := range entries {
+			rf.applyCh <- ApplyMsg{
 				CommandValid: true,
-				Command: entry.Command,
+				Command:      entry.Command,
 				CommandIndex: tempLastApplied + i + 1,
 			}
 		}
