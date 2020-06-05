@@ -22,6 +22,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"fmt"
 )
 
 // import "bytes"
@@ -152,7 +153,7 @@ type RequestVoteArgs struct {
 	Term         int
 	CandidateID  int
 	LastLogIndex int
-	LastLogTerm  *LogEntry
+	LastLogTerm  int
 }
 
 // RequestVoteReply structure
@@ -267,7 +268,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// fmt.Print(time.Since(rf.lastElectionTime))
 		rf.lastElectionTime = time.Now()
 
-		if args.PrevLogIndex == -1 || (args.PrevLogIndex < len(rf.log) && args.PrevLogTerm == rf.log[args.PrevLogIndex].Term) {
+		if args.PrevLogIndex == -1 || (args.PrevLogIndex < len(rf.log) && args.PrevLogTerm == rf.log[args.PrevLogIndex].TermLeaderReceived) {
 			reply.Success = true
 
 			logInsertIndex := args.PrevLogIndex + 1
@@ -277,7 +278,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				if logInsertIndex >= len(rf.log) || newEntriesIndex >= len(args.Entries) {
 					break
 				}
-				if rf.log[logInsertIndex].Term != args.Entries[newEntriesIndex].Term {
+				if rf.log[logInsertIndex].TermLeaderReceived != args.Entries[newEntriesIndex].TermLeaderReceived {
 					break
 				}
 				logInsertIndex++
@@ -285,11 +286,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 
 			if newEntriesIndex < len(args.Entries) {
-				rf.log = append(rf.log[:logInsertIndex], args.Entries[newEntriesIndex:])
+				rf.log = append(rf.log[:logInsertIndex], args.Entries[newEntriesIndex:]...)
 			}
 
 			if args.LeaderCommit > rf.commitIndex {
-				rf.commitIndex = intMin(args.LeaderCommit, len(rf.log) - 1)
+				rf.commitIndex = len(rf.log) - 1
+				if (args.LeaderCommit < len(rf.log) - 1) {
+					rf.commitIndex = args.LeaderCommit
+				}
 				rf.applyCh <- struct{}{}
 			}
 		}
@@ -338,12 +342,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	
 	if rf.position == 3 {
 		logEntry := LogEntry{
-			Command: command, TermLeaderReceived: rf.currentTerm
+			Command: command, TermLeaderReceived: rf.currentTerm,
 		}
-		rf.log = append(rf.log, logEntry)
+		rf.log = append(rf.log, &LogEntry{Command: command, TermLeaderReceived: rf.currentTerm})
 		isLeader = true
-	}
-	else {
+	} else {
 		isLeader = false
 	}
 
@@ -486,7 +489,7 @@ func (rf *Raft) startElection() {
 				Term:        currentTerm,
 				CandidateID: rf.me,
 				LastLogIndex: lastLogIndex,
-				LastLogTerm: lastLogTerm
+				LastLogTerm: lastLogTerm,
 			}
 			var reply RequestVoteReply
 
@@ -549,7 +552,7 @@ func (rf *Raft) sendHeartbeats() {
 			if prevLogIndex >= 0 {
 				prevLogTerm = rf.log[prevLogIndex].TermLeaderReceived
 			}
-			entries := nf.log[nextIndex:]
+			entries := rf.log[nextIndex:]
 			
 			args := AppendEntriesArgs{
 				Term:     currentTerm,
@@ -557,7 +560,7 @@ func (rf *Raft) sendHeartbeats() {
 				PrevLogIndex: prevLogIndex,
 				PrevLogTerm: prevLogTerm,
 				Entries: entries,
-				LeaderCommit: rf.commitIndex
+				LeaderCommit: rf.commitIndex,
 			}
 			rf.mu.Unlock()
 			var reply AppendEntriesReply
@@ -581,11 +584,11 @@ func (rf *Raft) sendHeartbeats() {
 					return
 				}
 
-				if rf.position == 3 && currentTerm == reply.TermLeaderReceived {
+				if rf.position == 3 && currentTerm == reply.Term {
 					if reply.Success {
 						rf.matchIndex[nPeer] = rf.nextIndex[nPeer] - 1
 						rf.nextIndex[nPeer] = nextIndex + len(entries)
-						fmt.Printf("\nAppendEntries reply from %d success: nextIndex := %v, matchIndex := %v", peerId, cm.nextIndex, cm.matchIndex)
+						fmt.Printf("\nAppendEntries reply from %d success: nextIndex := %v, matchIndex := %v", nPeer, rf.nextIndex, rf.matchIndex)
 
 						tempCommitIndex := rf.commitIndex
 						for i := rf.commitIndex + 1; i < len(rf.log); i++ {
@@ -606,10 +609,9 @@ func (rf *Raft) sendHeartbeats() {
 							fmt.Printf("\nleader sets commitIndex := %d", rf.commitIndex)
 							rf.applyCh <- struct{}{}
 						}
-					}
-					else {
+					} else {
 						rf.nextIndex[nPeer] = nextIndex - 1
-						fmt.Printf("\nAppendEntries reply from %d !success: nextIndex := %d", peerId, ni - 1)
+						fmt.Printf("\nAppendEntries reply from %d !success: nextIndex := %d", nPeer, nextIndex - 1)
 					}
 				}
 			}
