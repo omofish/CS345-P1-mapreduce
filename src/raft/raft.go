@@ -17,12 +17,12 @@ package raft
 //
 
 import (
+	"fmt"
 	"labrpc"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
-	"fmt"
 )
 
 // import "bytes"
@@ -51,6 +51,9 @@ type Raft struct {
 	me        int                 // this peer's index into peers[]
 
 	applyCh chan ApplyMsg // Channel for the commit to the state machine
+
+	// Danny
+	newCommits chan struct{}
 
 	// Your data here (3, 4).
 	// Look at the paper's Figure 2 for a description of what
@@ -291,10 +294,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 			if args.LeaderCommit > rf.commitIndex {
 				rf.commitIndex = len(rf.log) - 1
-				if (args.LeaderCommit < len(rf.log) - 1) {
+				if args.LeaderCommit < len(rf.log)-1 {
 					rf.commitIndex = args.LeaderCommit
 				}
-				rf.applyCh <- struct{}{}
+				rf.newCommits <- struct{}{}
 			}
 		}
 	}
@@ -339,7 +342,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	index = rf.commitIndex + 1
 	term = rf.currentTerm
-	
+
 	if rf.position == 3 {
 		logEntry := LogEntry{
 			Command: command, TermLeaderReceived: rf.currentTerm,
@@ -408,6 +411,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		rf.mu.Unlock()
 		rf.runElectionTimer()
 	}()
+
+	go rf.applyMsgHelper()
+
 	return rf
 }
 
@@ -486,10 +492,10 @@ func (rf *Raft) startElection() {
 
 			// set args and reply
 			args := RequestVoteArgs{
-				Term:        currentTerm,
-				CandidateID: rf.me,
+				Term:         currentTerm,
+				CandidateID:  rf.me,
 				LastLogIndex: lastLogIndex,
-				LastLogTerm: lastLogTerm,
+				LastLogTerm:  lastLogTerm,
 			}
 			var reply RequestVoteReply
 
@@ -553,13 +559,13 @@ func (rf *Raft) sendHeartbeats() {
 				prevLogTerm = rf.log[prevLogIndex].TermLeaderReceived
 			}
 			entries := rf.log[nextIndex:]
-			
+
 			args := AppendEntriesArgs{
-				Term:     currentTerm,
-				LeaderID: rf.me,
+				Term:         currentTerm,
+				LeaderID:     rf.me,
 				PrevLogIndex: prevLogIndex,
-				PrevLogTerm: prevLogTerm,
-				Entries: entries,
+				PrevLogTerm:  prevLogTerm,
+				Entries:      entries,
 				LeaderCommit: rf.commitIndex,
 			}
 			rf.mu.Unlock()
@@ -600,18 +606,18 @@ func (rf *Raft) sendHeartbeats() {
 									}
 								}
 
-								if 2 * count > len(rf.peers) + 1 {
+								if 2*count > len(rf.peers)+1 {
 									rf.commitIndex = i
 								}
 							}
 						}
 						if rf.commitIndex != tempCommitIndex {
 							fmt.Printf("\nleader sets commitIndex := %d", rf.commitIndex)
-							rf.applyCh <- struct{}{}
+							rf.newCommits <- struct{}{}
 						}
 					} else {
 						rf.nextIndex[nPeer] = nextIndex - 1
-						fmt.Printf("\nAppendEntries reply from %d !success: nextIndex := %d", nPeer, nextIndex - 1)
+						fmt.Printf("\nAppendEntries reply from %d !success: nextIndex := %d", nPeer, nextIndex-1)
 					}
 				}
 			}
@@ -689,5 +695,28 @@ func (rf *Raft) getPosition() string {
 		return "leader"
 	default:
 		return "invalid pos"
+	}
+}
+
+// Danny
+func (rf *Raft) applyMsgHelper() {
+	for range rf.newCommits {
+		rf.mu.Lock()
+		tempTerm := rf.currentTerm
+		tempLastApplied := rf.lastApplied
+		var entries []LogEntry
+		if rf.commitIndex > rf.lastApplied {
+			entries = rf.log[rf.lastApplied+1 : rf.commitIndex+1]
+			rf.lastApplied = rf.commitIndex
+		}
+		rf.mu.Unlock()
+
+		for i, entry := entries {
+			rf.applyCh<-ApplyMsg{
+				CommandValid: true,
+				Command: entry.Command,
+				CommandIndex: tempLastApplied + i + 1,
+			}
+		}
 	}
 }
