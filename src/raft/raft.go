@@ -60,18 +60,20 @@ type Raft struct {
 	// persistent states (might need to be saved in persister instead)
 	// 1 - follower, 2 - candidate, 3 - leader NOTE this wasnt in the paper but they didn't really specify how else to indicate leadership for peers
 	position    int
-	currentTerm int
-	votedFor    int
-	log         []*LogEntry
+	currentTerm int // latest term server has seen (initialized to 0)
+	votedFor    int // CandidateID that received vote in current term (null if none)
+	log         []LogEntry // log entries; each entry contains command for state machine, and term when entry was received by leader
 
 	// volatile states
-	commitIndex      int
-	lastApplied      int
+	commitIndex      int // index of highest log entry known to be committed
+	lastApplied      int // index of highest log entry applied to state machine
 	lastElectionTime time.Time
 
 	// leader volatile states
-	nextIndex  []int
-	matchIndex []int
+	// DANNY START.
+	nextIndex  map[int]int // for each server, index of the next log entry to send to that server
+	matchIndex map[int]int // for each server, index of highest log entry known to be replicated on server
+	// DANNY END.
 
 	// JASON'S CODE END
 }
@@ -149,16 +151,16 @@ type LogEntry struct {
 
 // RequestVoteArgs structure
 type RequestVoteArgs struct {
-	Term         int
-	CandidateID  int
-	LastLogIndex int
-	LastLogTerm  *LogEntry
+	Term         int // candidate's term
+	CandidateID  int // candidate requesting vote
+	LastLogIndex int // index of candidate's last log entry
+	LastLogTerm  int // term of candidate's last log entry
 }
 
 // RequestVoteReply structure
 type RequestVoteReply struct {
-	Term        int
-	VoteGranted bool
+	Term        int // currentTerm, for candidate to update itself
+	VoteGranted bool // true means candidate received vote
 }
 
 //
@@ -225,18 +227,18 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 // AppendEntriesArgs structure
 type AppendEntriesArgs struct {
-	Term         int
-	LeaderID     int
-	PrevLogIndex int
-	PrevLogTerm  int
-	Entries      []*LogEntry
-	LeaderCommit int
+	Term         int // leader's term
+	LeaderID     int // so that the follower can redirect client's
+	PrevLogIndex int // index of log entry immediately preceding new ones
+	PrevLogTerm  int // term of PrevLogIndex entry
+	Entries      []LogEntry // log entries to store (empty for heartbeat)
+	LeaderCommit int // leader's commitIndex
 }
 
 // AppendEntriesReply structure
 type AppendEntriesReply struct {
-	Term    int
-	Success bool
+	Term    int // currentTerm, for leader to update itself
+	Success bool // true if follower contained entry matching PrevLogIndex and PrevLogTerm
 }
 
 // AppendEntries RPC handler.
@@ -273,7 +275,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 // IMPL: JASON
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-
 	return ok
 }
 
@@ -297,6 +298,18 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (4).
+	// DANNY START.
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.position == 3 {
+		rf.log = append(rf.log, LogEntry{Command: command, TermLeaderReceived: term})
+		index = rf.commitIndex
+		term = rf.currentTerm
+	} else {
+		isLeader = false
+	}
+	// DANNY END.
 
 	return index, term, isLeader
 }
@@ -335,15 +348,17 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.position = 1
 	rf.currentTerm = 0
 	rf.votedFor = -1
-	rf.log = []*LogEntry{}
+	rf.log = []LogEntry{}
 
 	// volatile states
 	rf.commitIndex = 0
 	rf.lastApplied = 0
-
+	
+	// DANNY START.
 	// leader volatile states
-	rf.nextIndex = []int{}
-	rf.matchIndex = []int{}
+	rf.nextIndex = make(map[int]int)
+	rf.matchIndex = make(map[int]int)
+	// DANNY END.
 
 	// fmt.Printf("\n\nNode %d initialized", rf.me)
 
