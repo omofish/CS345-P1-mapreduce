@@ -303,9 +303,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	defer rf.mu.Unlock()
 
 	if rf.position == 3 {
-		rf.log = append(rf.log, LogEntry{Command: command, TermLeaderReceived: term})
 		index = rf.commitIndex
 		term = rf.currentTerm
+		rf.log = append(rf.log, LogEntry{Command: command, TermLeaderReceived: term})
 	} else {
 		isLeader = false
 	}
