@@ -63,12 +63,12 @@ type Raft struct {
 	votedFor    int        // CandidateID that received vote in current term (null if none)
 	log         []LogEntry // log entries; each entry contains command for state machine, and term when entry was received by leader
 
-	// volatile states
+	// volatile states on all servers
 	commitIndex      int // index of highest log entry known to be committed
 	lastApplied      int // index of highest log entry applied to state machine
 	lastElectionTime time.Time
 
-	// leader volatile states
+	// volatile states on leaders
 	// DANNY START.
 	nextIndex  map[int]int // for each server, index of the next log entry to send to that server
 	matchIndex map[int]int // for each server, index of highest log entry known to be replicated on server
@@ -165,34 +165,28 @@ type RequestVoteReply struct {
 //
 // RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	// DANNY START.
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	lastLogIndex, lastLogTerm := rf.lastLogIndexAndTerm() // DANNY ADD.
+	reply.VoteGranted = false
 
-	// become follower if own term outdated
-	if args.Term > rf.currentTerm {
+	if args.Term > rf.currentTerm { // if candidate's term is higher, then become a follower
 		rf.becomeFollower(args.Term)
-		// fmt.Printf("\n%s %d term updated to %d", rf.getPosition(), rf.me, args.Term)
 	}
 
-	// if terms match and has not voted/already voted for candidate and , grant vote
-	if args.Term == rf.currentTerm &&
+	lastLogIndex, lastLogTerm := rf.lastLogIndexAndTerm()
+	if (args.Term == rf.currentTerm) &&
 		(rf.votedFor == -1 || rf.votedFor == args.CandidateID) &&
-		// DANNY START.
-		(args.LastLogTerm > lastLogTerm || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex)) {
-		// DANNY END.
-		// fmt.Printf("\n%s %d voted for candidate %d", rf.getPosition(), rf.me, args.CandidateID)
+		(lastLogTerm < args.LastLogTerm || (lastLogTerm == args.LastLogTerm && lastLogIndex <= args.LastLogIndex)) { // if candidate log is up-to-date, grant vote
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateID
 		rf.lastElectionTime = time.Now()
-	} else {
-		// fmt.Printf("\n%s %d denied vote to candidate %d", rf.getPosition(), rf.me, args.CandidateID)
-		reply.VoteGranted = false
 	}
 
 	reply.Term = rf.currentTerm
 	return
+	// DANNY END.
 }
 
 //
@@ -232,11 +226,11 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // AppendEntriesArgs structure
 type AppendEntriesArgs struct {
 	Term         int        // leader's term
-	LeaderID     int        // so that the follower can redirect client's
+	LeaderID     int        // so that the follower can redirect clients
 	PrevLogIndex int        // index of log entry immediately preceding new ones
 	PrevLogTerm  int        // term of PrevLogIndex entry
 	Entries      []LogEntry // log entries to store (empty for heartbeat)
-	LeaderCommit int        // leader's commitIndex
+	LeaderCommit int        // leader's commitIndex - index of highest log entry known to be committed
 }
 
 // AppendEntriesReply structure
@@ -249,10 +243,10 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
 	reply.Success = false
 
-	// become follower if own term outdated
-	if rf.currentTerm < args.Term {
+	if args.Term > rf.currentTerm { // if leader's term is higher, then become a follower
 		rf.becomeFollower(args.Term)
 	}
 
@@ -260,43 +254,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if rf.position != 1 { // if not already a follower, become follower
 			rf.becomeFollower(args.Term)
 		}
-		// fmt.Print(time.Since(rf.lastElectionTime))
 		rf.lastElectionTime = time.Now()
 
 		// DANNY START.
-		if args.PrevLogIndex == -1 || (args.PrevLogIndex < len(rf.log) && args.PrevLogTerm == rf.log[args.PrevLogIndex].TermLeaderReceived) {
+		if args.PrevLogIndex == -1 ||
+			(args.PrevLogIndex < len(rf.log) && args.PrevLogTerm == rf.log[args.PrevLogIndex].TermLeaderReceived) {
 			reply.Success = true
-
-			logInsertIndex := args.PrevLogIndex + 1
-			newEntriesIndex := 0
-
-			for {
-				if logInsertIndex >= len(rf.log) || newEntriesIndex >= len(args.Entries) {
-					break
-				}
-				if rf.log[logInsertIndex].TermLeaderReceived != args.Entries[newEntriesIndex].TermLeaderReceived {
-					break
-				}
-				logInsertIndex++
-				newEntriesIndex++
-			}
-			// At the end of this loop:
-			// - logInsertIndex points at the end of the log, or an index where the
-			//   term mismatches with an entry from the leader
-			// - newEntriesIndex points at the end of Entries, or an index where the
-			//   term mismatches with the corresponding log entry
-			if newEntriesIndex < len(args.Entries) {
-				rf.log = append(rf.log[:logInsertIndex], args.Entries[newEntriesIndex:]...)
-			}
-
-			// Set commit index.
-			if args.LeaderCommit > rf.commitIndex {
-				rf.commitIndex = args.LeaderCommit
-				if len(rf.log)-1 < args.LeaderCommit {
-					rf.commitIndex = len(rf.log) - 1
-				}
-				rf.commitHelper()
-			}
 		}
 		// DANNY END.
 	}
@@ -337,9 +300,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	index = rf.commitIndex
+	term = rf.currentTerm
 	if rf.position == 3 {
-		index = rf.commitIndex
-		term = rf.currentTerm
 		rf.log = append(rf.log, LogEntry{Command: command, TermLeaderReceived: term}) // if leader, directly append to log
 	} else {
 		isLeader = false
@@ -416,8 +379,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 // runElectionTimer runs a timer that will signal when a follower should start an election again
 func (rf *Raft) runElectionTimer() {
 	timeoutDuration := rf.getDuration("election")
-	// fmt.Printf("\nnode %d election timer begins. duration: ", rf.me)
-	// fmt.Print(timeoutDuration)
 	rf.mu.Lock()
 	currentTerm := rf.currentTerm
 	rf.mu.Unlock()
@@ -530,8 +491,7 @@ func (rf *Raft) sendHeartbeats() {
 	rf.mu.Unlock()
 
 	for nPeer := 0; nPeer < len(rf.peers); nPeer++ {
-		// do note send heartbeat to self
-		if nPeer == rf.me {
+		if nPeer == rf.me { // don't send heartbeat to self
 			continue
 		}
 
@@ -564,40 +524,12 @@ func (rf *Raft) sendHeartbeats() {
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
 
-				// become follower if out of date
-				if reply.Term > currentTerm {
+				if reply.Term > currentTerm { // become follower if out-of-date
 					rf.becomeFollower(reply.Term)
 					return
 				}
 
 				// DANNY START.
-				if rf.position == 3 && currentTerm == reply.Term {
-					if reply.Success { // if successful, update nextIndex and matchIndex for the follower
-						rf.nextIndex[nPeer] = nextIndex + len(entries)
-						rf.matchIndex[nPeer] = rf.nextIndex[nPeer] - 1
-
-						// log replication - indices are 0-based
-						commitIndex := rf.commitIndex
-						for i := rf.commitIndex + 1; i < len(rf.log); i++ {
-							if rf.currentTerm == rf.log[i].TermLeaderReceived {
-								match := 1
-								for p := 0; p < len(rf.peers); p++ {
-									if rf.matchIndex[p] >= i {
-										match++
-									}
-								}
-								if 2*match > len(rf.peers)+1 { // check if log entry is replicated to majority of servers
-									rf.commitIndex = i // if so, then update commitIndex
-								}
-							}
-						}
-						if rf.commitIndex != commitIndex { // if commitIndex has been updated, commit the messages from lastApplied to commitIndex
-							rf.commitHelper() // commits messages and also updates lastApplied
-						}
-					} else { // if AppendEntries fails because of log inconsistency, decrement nextIndex and retry
-						rf.nextIndex[nPeer] = nextIndex - 1
-					}
-				}
 				// DANNY END.
 
 				// // exit if terms mismatch (for concurrency)
@@ -610,26 +542,6 @@ func (rf *Raft) sendHeartbeats() {
 	}
 }
 
-// DANNY START.
-// commits messages and also updates lastApplied
-func (rf *Raft) commitHelper() {
-	rf.mu.Lock()
-	lastApplied := rf.lastApplied
-	var entries []LogEntry
-
-	if rf.commitIndex > rf.lastApplied {
-		entries = rf.log[rf.lastApplied+1 : rf.commitIndex+1] // CHECK INDICES HERE.
-		rf.lastApplied = rf.commitIndex
-	}
-	rf.mu.Unlock()
-
-	for i, entry := range entries {
-		rf.applyCh <- ApplyMsg{CommandValid: true, Command: entry.Command, CommandIndex: lastApplied + i + 1} // CHECK INDEX HERE.
-	}
-}
-
-// DANNY END.
-
 // BECOMES
 
 // becomeLeader changes a node into a leader and starts a ticker to make it send out heartbeats
@@ -639,7 +551,7 @@ func (rf *Raft) becomeLeader() {
 
 	// DANNY START.
 	for nPeer := 0; nPeer < len(rf.peers); nPeer++ {
-		rf.nextIndex[nPeer] = len(rf.log)
+		rf.nextIndex[nPeer] = len(rf.log) // initialize all nextIndex values to the index just after the last one in its log
 		rf.matchIndex[nPeer] = -1
 	}
 	// DANNY END.
@@ -672,7 +584,6 @@ func (rf *Raft) becomeFollower(term int) {
 	rf.position = 1
 	rf.currentTerm = term
 	rf.votedFor = -1
-	// fmt.Print(time.Since(rf.lastElectionTime))
 	rf.lastElectionTime = time.Now()
 
 	go rf.runElectionTimer()
