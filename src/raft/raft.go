@@ -256,12 +256,32 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		rf.lastElectionTime = time.Now()
 
-		// DANNY START.
+		// DANNY CERTAIN START.
 		if args.PrevLogIndex == -1 ||
 			(args.PrevLogIndex < len(rf.log) && args.PrevLogTerm == rf.log[args.PrevLogIndex].TermLeaderReceived) {
 			reply.Success = true
+
+			// DANNY UNCERTAIN START.
+			if args.PrevLogIndex != -1 {
+				rf.log = rf.log[:args.PrevLogIndex+1] // keep log the same up until leader's PrevLogIndex
+			}
+			rf.log = append(rf.log, args.Entries...)
+			// update commitIndex
+			commitIndex := rf.commitIndex
+			if args.LeaderCommit > rf.commitIndex {
+				rf.commitIndex = len(rf.log) - 1
+				if rf.commitIndex < args.LeaderCommit {
+					rf.commitIndex = args.LeaderCommit
+				}
+			}
+			for entry := commitIndex + 1; entry < rf.commitIndex+1; entry++ {
+				// fmt.Printf("follower %v command: %v at index %v\n", rf.me, rf.log[entry].Command, entry)
+				rf.applyCh <- ApplyMsg{CommandValid: true, Command: rf.log[entry].Command, CommandIndex: entry}
+			}
+			rf.lastElectionTime = time.Now()
+			// DANNY UNCERTAIN END.
 		}
-		// DANNY END.
+		// DANNY CERTAIN END.
 	}
 
 	reply.Term = rf.currentTerm
@@ -300,9 +320,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	index = rf.commitIndex
-	term = rf.currentTerm
 	if rf.position == 3 {
+		index = rf.commitIndex
+		term = rf.currentTerm
 		rf.log = append(rf.log, LogEntry{Command: command, TermLeaderReceived: term}) // if leader, directly append to log
 	} else {
 		isLeader = false
@@ -421,24 +441,22 @@ func (rf *Raft) runElectionTimer() {
 
 // startElection lets the node become a candidate and start an election
 func (rf *Raft) startElection() {
-	rf.position = 2 // set position to candidate
-	rf.currentTerm++
-	currentTerm := rf.currentTerm // save current term
-	rf.lastElectionTime = time.Now()
-	rf.votedFor = rf.me // vote for self
+	rf.position = 2                  // set position to candidate
+	rf.currentTerm++                 // increment current term
+	currentTerm := rf.currentTerm    // save current term
+	rf.votedFor = rf.me              // vote for self
+	rf.lastElectionTime = time.Now() // reset election timer
 
 	var votesReceived int32
 	votesReceived = 1 // start with one vote from self
 
-	// send concurrent RequestVote RPCs to other nodes
+	// send concurrent RequestVote RPCs to all other servers
 	for nPeer := 0; nPeer < len(rf.peers); nPeer++ {
-		// do not request vote from self
-		if nPeer == rf.me {
+		if nPeer == rf.me { // do not request vote from self
 			continue
 		}
 
 		go func(nPeer int) {
-			// set args and reply
 			// DANNY START.
 			rf.mu.Lock()
 			lastLogIndex, lastLogTerm := rf.lastLogIndexAndTerm()
@@ -458,19 +476,17 @@ func (rf *Raft) startElection() {
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
 
-				// exit if candidate changes position midway
-				if rf.position != 2 {
-					// fmt.Printf("\nwhile %s %d waiting for vote to return, changed position", rf.getPosition(), rf.me)
+				if rf.position != 2 { // exit if candidate changes position midway
 					return
 				}
 
-				if reply.Term > currentTerm {
+				if reply.Term > currentTerm { // if another server is of a later term, become a follower
 					rf.becomeFollower(reply.Term)
 					return
 				} else if reply.Term == currentTerm {
 					if reply.VoteGranted {
 						votes := int(atomic.AddInt32(&votesReceived, 1))
-						if votes*2 > len(rf.peers) {
+						if votes*2 > len(rf.peers) { // if received votes from majority of servers, become leader
 							rf.becomeLeader()
 							return
 						}
@@ -484,21 +500,21 @@ func (rf *Raft) startElection() {
 	go rf.runElectionTimer()
 }
 
-// sends heartbeats to all nodes; also used for sending AppendEntries
+// for leader to send heartbeats to all other servers; also used for sending AppendEntries
 func (rf *Raft) sendHeartbeats() {
 	rf.mu.Lock()
 	currentTerm := rf.currentTerm // save current term
 	rf.mu.Unlock()
 
+	// send concurrent AppendEntries RPCs to all other servers
 	for nPeer := 0; nPeer < len(rf.peers); nPeer++ {
-		if nPeer == rf.me { // don't send heartbeat to self
+		if nPeer == rf.me { // do not send heartbeat to self
 			continue
 		}
 
 		go func(nPeer int) {
 			// DANNY START.
 			rf.mu.Lock()
-			// set args and reply
 			nextIndex := rf.nextIndex[nPeer]
 			prevLogIndex := nextIndex - 1
 			prevLogTerm := -1
@@ -530,13 +546,36 @@ func (rf *Raft) sendHeartbeats() {
 				}
 
 				// DANNY START.
-				// DANNY END.
+				if rf.position == 3 && currentTerm == reply.Term {
+					if reply.Success {
+						rf.nextIndex[nPeer] = nextIndex + len(entries)
+						rf.matchIndex[nPeer] = rf.nextIndex[nPeer] - 1
 
-				// // exit if terms mismatch (for concurrency)
-				// if currentTerm != rf.currentTerm {
-				// 	// fmt.Printf("\nwhile %s %d sending heartbeat, terms mismatch %d != %d, stopping", rf.getPosition(), rf.me, currentTerm, rf.currentTerm)
-				// 	return
-				// }
+						commitIndex := rf.commitIndex
+						for i := rf.commitIndex + 1; i < len(rf.log); i++ {
+							if rf.log[i].TermLeaderReceived == rf.currentTerm {
+								matchCount := 1
+								for p := 0; p < len(rf.peers); p++ {
+									if rf.matchIndex[p] >= i {
+										matchCount++
+									}
+								}
+								if matchCount*2 > len(rf.peers) {
+									rf.commitIndex = i
+								}
+							}
+						}
+						if rf.commitIndex != commitIndex {
+							for entry := commitIndex + 1; entry < rf.commitIndex+1; entry++ {
+								// fmt.Printf("leader %v command: %v at index %v\n", rf.me, rf.log[entry].Command, entry)
+								rf.applyCh <- ApplyMsg{CommandValid: true, Command: rf.log[entry].Command, CommandIndex: entry}
+							}
+						}
+					} else {
+						rf.nextIndex[nPeer] = nextIndex - 1
+					}
+				}
+				// DANNY END.
 			}
 		}(nPeer)
 	}
